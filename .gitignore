@@ -25,3 +25,5 @@ internal/
 
 # For MacOS
 *.DS_Store
+docker-compose.yml
+progress.md
