@@ -55,6 +55,7 @@ anyhow = "1"
 # Async traits
 
 # HTTP client for proxying
+reqwest = "0.12"
 http = "1"
 http-body-util = "0.1"
 async-trait = "0.1"

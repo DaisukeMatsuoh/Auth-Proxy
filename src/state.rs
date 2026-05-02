@@ -14,6 +14,7 @@ pub struct AppState {
     pub users: Arc<UserStoreDb>,
     pub sessions: Arc<SessionStoreDb>,
     pub mfa: Arc<MfaStore>,
+    pub http_client: reqwest::Client,
 }
 
 impl AppState {
@@ -58,12 +59,15 @@ impl AppState {
             Self::seed_users(&db, &config.users_raw).await?;
         }
 
+        let http_client = reqwest::Client::new();
+
         Ok(Self {
             config,
             db,
             users,
             sessions,
             mfa,
+            http_client,
         })
     }
 
@@ -116,6 +120,7 @@ impl AppState {
             users,
             sessions,
             mfa,
+            http_client: reqwest::Client::new(),
         })
     }
 }

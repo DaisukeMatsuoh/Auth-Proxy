@@ -26,8 +26,7 @@ pub async fn get_login(
                     if let Some(value) = trimmed.strip_prefix("session_id=") {
                         // Check if session exists (async)
                         if let Ok(Some(_)) = state.sessions.get(value).await {
-                            // Session valid, redirect to serve static files (index.html)
-                            return Redirect::to("/index.html").into_response();
+                            return Redirect::to("/").into_response();
                         }
                     }
                 }
