@@ -1,31 +1,16 @@
 name: Claude Code Review
-
 on:
   pull_request:
-    # types: [opened, synchronize, ready_for_review, reopened]  # Default設定
     types: [opened, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
-
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
-      issues: read
+      pull-requests: write
+      issues: write
       id-token: write
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -37,9 +22,18 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
-          plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
 
+            このPRをレビューして、以下の観点でフィードバックしてください：
+            - コード品質とベストプラクティス
+            - バグや潜在的な問題
+            - セキュリティ上の懸念
+            - パフォーマンスへの影響
+
+            トップレベルのフィードバックは `gh pr comment` で投稿してください。
+            特定のコード箇所への指摘は `mcp__github_inline_comment__create_inline_comment`（confirmed: true）を使ってください。
+          claude_args: |
+            --model claude-haiku-4-5-20251001
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
