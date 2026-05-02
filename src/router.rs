@@ -44,8 +44,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/settings/mfa/setup/confirm", post(handlers::settings::confirm_setup))
         .route("/settings/mfa/disable", post(handlers::settings::disable_mfa))
         .route("/settings/mfa/revoke-devices", post(handlers::settings::revoke_devices))
-        // Fallback route for all other paths (static file serving / upstream proxy)
-        .fallback(handlers::static_files::serve_static_files)
+        // Fallback route: static files (if APP_SERVE_PATH set) then upstream proxy
+        .fallback(handlers::proxy::proxy_handler)
         // Apply auth middleware to all routes except /login, /logout, /mfa/*, and some explicit routes
         .layer(from_fn_with_state(state.clone(), middleware::auth::auth_middleware))
         .with_state(state)

@@ -191,7 +191,8 @@ pub async fn show(
 pub async fn show_password(
     Extension(_auth_user): Extension<AuthUser>,
 ) -> Html<String> {
-    let issuer_name = std::env::var("APP_ISSUER_NAME")
+    let issuer_name = std::env::var("AUTH_PROXY_ISSUER_NAME")
+        .or_else(|_| std::env::var("APP_ISSUER_NAME"))  // fallback for compatibility
         .unwrap_or_else(|_| "Auth Proxy".to_string());
 
     let html = format!(
@@ -437,7 +438,8 @@ pub async fn handle_regenerate_backup_codes(
 
 // Helper function to show password form with error
 fn error_password_form(_auth_user: &AuthUser, error_message: &str) -> Html<String> {
-    let issuer_name = std::env::var("APP_ISSUER_NAME")
+    let issuer_name = std::env::var("AUTH_PROXY_ISSUER_NAME")
+        .or_else(|_| std::env::var("APP_ISSUER_NAME"))  // fallback for compatibility
         .unwrap_or_else(|_| "Auth Proxy".to_string());
 
     let html = format!(

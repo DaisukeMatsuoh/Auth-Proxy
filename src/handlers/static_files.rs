@@ -42,8 +42,14 @@ pub async fn serve_static_files(
         return Err(AppError::NotFound);
     }
 
+    // Require serve_path to be configured
+    let serve_path = match &state.config.serve_path {
+        Some(p) => p.clone(),
+        None => return Err(AppError::NotFound),
+    };
+
     // Construct full file path
-    let mut full_path = state.config.serve_path.clone();
+    let mut full_path = serve_path;
     full_path.push(&request_path);
 
     // Determine content type based on file extension
