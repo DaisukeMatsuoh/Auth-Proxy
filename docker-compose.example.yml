@@ -9,11 +9,13 @@
 
 services:
   auth-proxy:
-    image: ghcr.io/your-org/auth-proxy:latest
-    # build: .   # uncomment to build locally
+    # Choose one: either use a pre-built image or build locally
+    image: ghcr.io/your-org/auth-proxy:latest    # Use pre-built image (recommended)
+    # build: .                                     # Build locally from current directory
     ports:
+      # Host port configurable via ${AUTH_PROXY_HOST_PORT} env var (default: 8080)
       # Point Traefik / nginx here. Never bind to 0.0.0.0 directly on public hosts.
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${AUTH_PROXY_HOST_PORT:-8080}:8080"
     volumes:
       - auth-proxy-data:/var/lib/auth-proxy
     env_file:
@@ -25,7 +27,10 @@ services:
       - app
 
   app:
-    image: my-app:latest
+    # Choose one: build from source, use a pre-built image, or use a public image
+    build: ./my-app             # Build from ./my-app/Dockerfile
+    # image: my-app:latest      # Use pre-built image
+    # image: nginx:alpine       # Use public image
     # Do NOT add `ports:` here — keeping the upstream off the host is the security core.
     networks:
       - internal
