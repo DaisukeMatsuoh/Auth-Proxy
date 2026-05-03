@@ -38,7 +38,7 @@ RUN target=$(cat /rust_target) && \
 # ---- 実行ステージ ----
 FROM scratch
 
-LABEL org.opencontainers.image.source="https://github.com/YOUR_GITHUB_USERNAME/auth-proxy"
+LABEL org.opencontainers.image.source="https://github.com/DaisukeMatsuoh/Auth-Proxy"
 
 COPY --from=builder /auth-proxy /auth-proxy
 
