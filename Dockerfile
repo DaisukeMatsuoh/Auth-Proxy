@@ -3,7 +3,11 @@
 # ---- ビルドステージ ----
 FROM rust:1.95-alpine AS builder
 
-RUN apk add --no-cache musl-dev
+RUN apk add --no-cache \
+    musl-dev \
+    openssl-dev \
+    openssl-libs-static \
+    pkgconf
 
 WORKDIR /build
 
@@ -23,12 +27,12 @@ RUN target=$(cat /rust_target) && \
     mkdir src && \
     echo 'fn main(){}' > src/main.rs && \
     echo '' > src/lib.rs && \
-    cargo build --release --target "$target" && \
+    OPENSSL_STATIC=1 cargo build --release --target "$target" && \
     rm -rf src
 
 COPY . .
 RUN target=$(cat /rust_target) && \
-    cargo build --release --target "$target" && \
+    OPENSSL_STATIC=1 cargo build --release --target "$target" && \
     cp "target/$target/release/auth-proxy" /auth-proxy
 
 # ---- 実行ステージ ----
