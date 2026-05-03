@@ -55,7 +55,7 @@ anyhow = "1"
 # Async traits
 
 # HTTP client for proxying
-reqwest = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 http = "1"
 http-body-util = "0.1"
 async-trait = "0.1"
