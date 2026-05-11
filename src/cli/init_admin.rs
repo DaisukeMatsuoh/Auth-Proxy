@@ -8,9 +8,9 @@ use std::io::{self, Write};
 /// Initialize the first admin user interactively
 ///
 /// This command:
-/// 1. Checks if any users exist in the database
-/// 2. If users exist, returns an error
-/// 3. If no users, prompts for admin username and password
+/// 1. Checks if an admin user already exists in the database
+/// 2. If admin exists, returns early (idempotent)
+/// 3. If no admin exists, prompts for admin username and password
 /// 4. Creates the admin user with role 'admin'
 pub async fn handle_init_admin() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration (without loading .env for CLI-only operations)
@@ -20,11 +20,12 @@ pub async fn handle_init_admin() -> Result<(), Box<dyn std::error::Error>> {
     // Create AppState without seeding default users
     let state = AppState::new_without_seed(config.clone()).await?;
 
-    // Check if any users already exist
+    // Check if admin user already exists
     let users = state.users.list_all().await?;
-    if !users.is_empty() {
-        eprintln!("Error: Database already contains {} user(s). Cannot create initial admin when users exist.", users.len());
-        return Err("Users already exist in database".into());
+    let admin_exists = users.iter().any(|u| u.role == "admin");
+    if admin_exists {
+        println!("Admin user already exists.");
+        return Ok(());
     }
 
     println!("Create initial admin user");
