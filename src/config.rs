@@ -43,11 +43,18 @@ pub enum ConfigError {
 }
 
 impl Config {
+    /// Load .env or .env.auth-proxy if it exists
+    fn load_env_file() {
+        // Try .env.auth-proxy first, then fall back to .env
+        let _ = dotenvy::from_filename(".env.auth-proxy")
+            .or_else(|_| dotenvy::dotenv());
+    }
+
     /// Load minimal config for CLI commands (only DB path)
     /// This is used by commands like init-admin that don't need full server config
     pub fn from_env_cli_only() -> Result<PathBuf, ConfigError> {
         // Load .env file if it exists
-        let _ = dotenvy::dotenv();
+        Self::load_env_file();
 
         // Only load DB path (optional, defaults to auth_proxy.db)
         let db_path_str = std::env::var("AUTH_PROXY_DB_PATH")
@@ -59,7 +66,7 @@ impl Config {
 
     pub fn from_env() -> Result<Self, ConfigError> {
         // Load .env file if it exists
-        let _ = dotenvy::dotenv();
+        Self::load_env_file();
 
         // Fetch environment variables with sensible defaults
         // For init-admin: APP_USERS can be a dummy value since DB will be empty
