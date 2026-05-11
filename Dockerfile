@@ -35,11 +35,16 @@ RUN target=$(cat /rust_target) && \
     OPENSSL_STATIC=1 cargo build --release --target "$target" && \
     cp "target/$target/release/auth-proxy" /auth-proxy
 
+# ---- CA証明書ステージ ----
+FROM alpine AS certs
+RUN apk add --no-cache ca-certificates
+
 # ---- 実行ステージ ----
 FROM scratch
 
 LABEL org.opencontainers.image.source="https://github.com/DaisukeMatsuoh/Auth-Proxy"
 
+COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /auth-proxy /auth-proxy
 
 VOLUME ["/var/lib/auth-proxy"]
