@@ -1,139 +1,137 @@
 # auth-proxy
 
-既存のWebアプリやファイルに**認証を後付けする**ための、認証特化型プロキシサーバーです。
+An authentication-focused reverse proxy that **adds authentication to existing web apps and static files without touching their code**.
 
-auth-proxyは認証処理を担い、認証済みリクエストのみ上流アプリに転送します。上流サービスはユーザー認証を一切実装することなく、`X-Auth-*` ヘッダーを読むだけでユーザーを識別することが出来ます。
+auth-proxy handles all authentication and forwards only authenticated requests to upstream services. Upstream services never need to implement authentication themselves — they simply read the `X-Auth-*` headers to identify users.
 
-## 動作モード
+## Modes
 
-auth-proxyは二種類の使い方があります。
+auth-proxy supports two deployment modes:
 
-| モード | 環境変数 | 用途 | 推奨デプロイ |
+| Mode | Environment Variable | Use Case | Recommended Deployment |
 |---|---|---|---|
-| **静的ファイルモード** | `AUTH_PROXY_SERVE_PATH` のみ | 社内ドキュメント・写真など静的サイトのため認証機能。認証機能と静的サイトのホスティングの両方を担います。 | シングルバイナリ |
-| **プロキシモード** | `AUTH_PROXY_UPSTREAM_APP_URL` のみ | 既存Webアプリ（静的ではない動的なアプリ）に認証機能だけ後でつけたい場合に利用します。auth-proxyの後ろにWebアプリが隠れるようにDockerを使う必要があります。 | Docker Compose |
-| **併用モード** | 両方設定 | 静的ファイルモードとプロキシモードの両方とも利用することもできます。 | Docker Compose |
+| **Static File Mode** | `AUTH_PROXY_SERVE_PATH` only | Serve internal documents, photos, or static sites with authentication. auth-proxy handles both authentication and file hosting. | Single binary |
+| **Proxy Mode** | `AUTH_PROXY_UPSTREAM_APP_URL` only | Add authentication to an existing dynamic web app. Docker is required to keep the upstream app hidden behind auth-proxy. | Docker Compose |
+| **Combined Mode** | Both set | Use static file serving and upstream proxying at the same time. | Docker Compose |
 
-`AUTH_PROXY_SERVE_PATH` と `AUTH_PROXY_UPSTREAM_APP_URL` はいずれか一方または両方を設定してください。**両方未設定の場合は起動エラー**になります。
+Set at least one of `AUTH_PROXY_SERVE_PATH` or `AUTH_PROXY_UPSTREAM_APP_URL`. **Leaving both unset is a startup error.**
 
-## oauth2-proxy との違い
+## Comparison with oauth2-proxy
 
 | | auth-proxy | oauth2-proxy |
 |---|---|---|
-| ユーザー管理 | 内蔵しているSQLiteで実現（管理画面付き） | Google / GitHub等の外部IdPに依存 |
-| セットアップ | バイナリ配置またはDocker Composeに追加 | OAuthアプリ登録・IdP設定が必要 |
-| 静的ファイル配信 | ✅ 内蔵 | ❌ |
-| MFA | ✅ TOTP（内蔵） | IdP依存 |
-| 外部サービス不要 | ✅ | ❌ |
-| イメージサイズ | 極小（静的バイナリ） | 中程度 |
+| User management | Built-in SQLite with admin UI | Depends on external IdP (Google, GitHub, etc.) |
+| Setup | Drop in a binary or add to Docker Compose | Requires OAuth app registration and IdP configuration |
+| Static file serving | ✅ Built-in | ❌ |
+| MFA | ✅ TOTP built-in | Depends on IdP |
+| No external services | ✅ | ❌ |
+| Image size | Minimal (static binary) | Medium |
 
 ---
 
-## 目次
+## Table of Contents
 
-- [機能一覧](#機能一覧)
-- [セキュリティ設計](#セキュリティ設計)
-- [デプロイ: 静的ファイルモード](#デプロイ-静的ファイルモード)
-- [デプロイ: プロキシモード (Docker)](#デプロイ-プロキシモード-docker)
-- [環境変数リファレンス](#環境変数リファレンス)
-- [CLIリファレンス](#cliリファレンス)
-- [上流サービスへのヘッダー伝達](#上流サービスへのヘッダー伝達)
-- [ゲストトークン機能](#ゲストトークン機能)
-- [運用](#運用)
-- [トラブルシューティング](#トラブルシューティング)
-- [プロジェクト構成](#プロジェクト構成)
+- [Features](#features)
+- [Security Design](#security-design)
+- [Deploy: Static File Mode](#deploy-static-file-mode)
+- [Deploy: Proxy Mode (Docker)](#deploy-proxy-mode-docker)
+- [Environment Variable Reference](#environment-variable-reference)
+- [CLI Reference](#cli-reference)
+- [Headers Forwarded to Upstream](#headers-forwarded-to-upstream)
+- [Guest Token Feature](#guest-token-feature)
+- [Operations](#operations)
+- [Troubleshooting](#troubleshooting)
+- [Project Structure](#project-structure)
 
 ---
 
-## 機能一覧
+## Features
 
-| フェーズ | 機能 | 状態 |
+| Phase | Feature | Status |
 |---|---|---|
-| Phase 1 | リバースプロキシ基盤・SQLiteセッション永続化 | ✅ 実装済み |
-| Phase 2 | Web管理画面（ユーザー一覧・追加・編集・削除） | ✅ 実装済み |
-| Phase 3a | MFA（TOTP・バックアップコード・デバイス記憶） | ✅ 実装済み |
-| Phase 3a-2 | 管理者MFA強制無効化・ユーザーセキュリティ設定・パスワード変更 | ✅ 実装済み |
-| Phase 4 | ゲストトークン機能（回数制限・パスワード付き共有リンク） | ✅ 実装済み |
-| Phase Docker | Dockerfile・Compose例・動作モード検証 | ✅ 実装済み |
-| Phase 3b | パスキー（WebAuthn） | 🔜 予定 |
+| Phase 1 | Reverse proxy core · SQLite session persistence | ✅ Done |
+| Phase 2 | Web admin UI (list, add, edit, delete users) | ✅ Done |
+| Phase 3a | MFA (TOTP · backup codes · device remembering) | ✅ Done |
+| Phase 3a-2 | Admin-forced MFA disable · user security settings · password change | ✅ Done |
+| Phase 4 | Guest tokens (use-count limits · password-protected share links) | ✅ Done |
+| Phase Docker | Dockerfile · Compose example · mode validation | ✅ Done |
+| Phase 3b | Passkeys (WebAuthn) | 🔜 Planned |
 
 ---
 
-## セキュリティ設計
+## Security Design
 
-### 静的ファイルモード
+### Static File Mode
 
-auth-proxyでHTTPリクエストを扱えます。`AUTH_PROXY_SERVE_PATH` 以下のファイルには承認されたユーザーのみ閲覧できるような制御をします。パストラバーサル（`../`等）は内部で防止しています。
+auth-proxy gates all HTTP requests against the session store. Only authenticated users can access files under `AUTH_PROXY_SERVE_PATH`. Path traversal (`../` etc.) is prevented internally.
 
-### プロキシモード
+### Proxy Mode
 
-プロキシモードではDockerを利用して、上流サービスと同じコンテナに入れ込みます。 上流アプリは`internal: true` ネットワークにのみ接続して上流アプリ自体はポートを公開しないのでDocker外から直接アクセスすることは出来ません。認証されたユーザーのみauth-proxyにより上流サービスにアクセスすることができます。
+In proxy mode, the upstream service runs alongside auth-proxy in Docker. Because the upstream service omits `ports:` in `docker-compose.yml`, it is unreachable directly from the host or the internet. Only requests that have passed through auth-proxy reach the upstream service.
 
-上流サービスはauth-proxyより `X-Auth-*` ヘッダーを受け取り、個々に書かれたユーザー情報でユーザーを判別できます。`X-Auth-*`ヘッダーはauth-proxy以外は書き込まないようにしているので、上流サービスはJWT署名検証などのセキュリティに関する実装をする必要がなく、判別されたユーザに対しての振る舞いに集中できます。
+Upstream services receive user identity via `X-Auth-*` headers. Because auth-proxy always strips any `X-Auth-*` headers arriving from clients before forwarding, upstream services do not need to implement JWT signature verification or any other auth logic — they simply read the headers.
 
-### Cookie属性
-
-```
-Set-Cookie: session_id=<token>; HttpOnly; Secure; SameSite=Strict; Max-Age=<TTL秒>
-```
-
-上記の属性はすべて必須です。`Secure` 属性があるため、TLSを終端するリバースプロキシ（Traefik等）と組み合わせることが前提としています。
-
-### その他
-
-- パスワード: Argon2id でハッシュ化。平文は一切保存・ログ出力しない。
-- セッションID: `OsRng` で生成した16バイトのhex文字列（32文字）
-- ブルートフォース対策: ログイン失敗時に500ms遅延
-- X-Auth-* 偽装防止: 受信リクエストの `X-Auth-` ヘッダーは転送前に必ず除去
-
-
-
-## デプロイ: 静的ファイルモード
-
-社内ドキュメントや写真ギャラリーなど、**静的ファイルをホスティングした上で認証をつけたい**場合にはこちらでデプロイできます。
+### Cookie Attributes
 
 ```
-[ブラウザ]
+Set-Cookie: session_id=<token>; HttpOnly; Secure; SameSite=Strict; Max-Age=<seconds>
+```
+
+All four attributes are required. The `Secure` attribute means auth-proxy must sit behind a TLS-terminating reverse proxy (Traefik, nginx, etc.).
+
+### Other
+
+- Passwords: hashed with Argon2id. Plaintext is never stored or logged.
+- Session IDs: 16 bytes from `OsRng`, hex-encoded (32 characters).
+- Brute-force protection: 500 ms delay on login failure.
+- `X-Auth-*` spoofing prevention: any `X-Auth-` headers sent by clients are stripped before forwarding.
+
+---
+
+## Deploy: Static File Mode
+
+Use this when you want to **host static files with authentication** — internal documentation, photo galleries, and so on.
+
+```
+[Browser]
     │ HTTPS
     ▼
-[Traefik / nginx 等]  ← TLS終端
+[Traefik / nginx]  ← TLS termination
     │ HTTP (127.0.0.1)
     ▼
-[auth-proxy バイナリ]  ← systemd で直接起動
+[auth-proxy binary]  ← launched directly via systemd
     │
-    ├── /login /logout /admin/*   auth-proxy が処理
-    └── /*                        AUTH_PROXY_SERVE_PATH からファイルを返す
+    ├── /login  /logout  /admin/*   handled by auth-proxy
+    └── /*                          served from AUTH_PROXY_SERVE_PATH
          └── SQLite (sessions, users)
 ```
 
-### セットアップ手順
+### Setup
 
 ```bash
-# 1. バイナリを配置
+# 1. Place the binary
 sudo cp target/release/auth-proxy /usr/local/bin/
 sudo chmod +x /usr/local/bin/auth-proxy
 
-# 2. ディレクトリと設定ファイルの作成
+# 2. Create directories and config file
 sudo mkdir -p /etc/auth-proxy /var/lib/auth-proxy
 sudo cp .env.auth-proxy.example /etc/auth-proxy/.env
 sudo chmod 600 /etc/auth-proxy/.env
 
-# 3. .env を編集（AUTH_PROXY_SERVE_PATH, AUTH_PROXY_LISTEN_ADDR=127.0.0.1:8080 等を設定）
+# 3. Edit .env (set AUTH_PROXY_SERVE_PATH, AUTH_PROXY_LISTEN_ADDR=127.0.0.1:8080, etc.)
 sudo vim /etc/auth-proxy/.env
 
-# 4. 最初の管理者ユーザーを作成
+# 4. Create the first admin user
 sudo auth-proxy init-admin
 
-# 5. systemd サービスを登録・起動
+# 5. Register and start the systemd service
 sudo cp systemd/auth-proxy.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable auth-proxy
 sudo systemctl start auth-proxy
 ```
 
-### systemd ユニットファイル例
-
-systemdでデーモン化する場合の参考:
+### systemd Unit File Example
 
 `/etc/systemd/system/auth-proxy.service`:
 
@@ -158,7 +156,7 @@ PrivateTmp=true
 WantedBy=multi-user.target
 ```
 
-### Traefik 設定例（静的ファイルモード）
+### Traefik Configuration Example (Static File Mode)
 
 ```yaml
 http:
@@ -176,50 +174,49 @@ http:
           - url: "http://127.0.0.1:8080"
 ```
 
+---
 
+## Deploy: Proxy Mode (Docker)
 
-## デプロイ: プロキシモード (Docker)
-
-既存のWebアプリに認証を後付けしたい場合はこちらでデプロイ。上流サービスをDockerの内部ネットワークに閉じ込めることでネットワーク隔離を実現します。
+Use this when you want to **add authentication to an existing dynamic web app**. The upstream service is kept inside Docker's internal network so it cannot be reached directly.
 
 ```
-[ブラウザ]
+[Browser]
     │ HTTPS
     ▼
-[Traefik / nginx 等]
+[Traefik / nginx]
     │ HTTP (127.0.0.1)
     ▼
-[auth-proxy コンテナ]
+[auth-proxy container]
     │
-    ├── /login /logout /admin/*   auth-proxy が処理
-    └── /*                        X-Auth-* ヘッダー付与 → 上流転送
-         │ Docker 内部ネットワーク
+    ├── /login  /logout  /admin/*   handled by auth-proxy
+    └── /*                          X-Auth-* headers added → forwarded upstream
+         │ Docker internal network
          ▼
-    [上流サービス コンテナ]  ← ホストにポートを公開しない
+    [upstream service container]  ← no ports exposed to the host
 ```
 
-### Step 1: 自分のアプリをDockerイメージにする
+### Step 1: Containerize Your App
 
-プロキシモードは上流サービス（自分のアプリ）がDockerイメージになっている前提で設計されています。まずは自分のアプリをDockerイメージにしてみましょう。**アプリのコードは一切変更しなくて大丈夫です。**
+Proxy mode assumes the upstream service (your app) is available as a Docker image. **You do not need to change any application logic.**
 
-変更しなくてもいい、と言いながらも、アプリのリッスンするポートとアドレスに関しては変更が必要かもしれません。**アドレスとポートの受付を `0.0.0.0`（全インターフェース）でリッスンさせてください。**`127.0.0.1` にバインドしているとコンテナ外（auth-proxy）からアクセスできなくなってしまいます。
+One thing to check: your app must listen on `0.0.0.0` (all interfaces), not `127.0.0.1`. Binding to `127.0.0.1` inside a container makes the app unreachable from other containers including auth-proxy.
 
-Dockerイメージをつくるためには以下の様なdockerfileを作る必要があります。テキストエディタでdockerfileを下記の例を参考に作ります：
+Below are Dockerfile examples for common stacks.
 
-#### Python (Flask / FastAPI) の例
+#### Python (Flask / FastAPI)
 
 ```dockerfile
-# アプリのリポジトリに Dockerfile を追加する
 FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-# 0.0.0.0 でリッスンさせること（127.0.0.1 はNG）
+# Must listen on 0.0.0.0, not 127.0.0.1
 CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "3000"]
 ```
 
-#### Go の例
+#### Go
 
 ```dockerfile
 FROM golang:1.22-alpine AS builder
@@ -227,7 +224,7 @@ WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-# CGO_ENABLED=0 で完全静的バイナリにする（scratch で動作させるために必須）
+# CGO_ENABLED=0 produces a fully static binary required for the scratch base image
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o app .
 
 FROM scratch
@@ -236,11 +233,11 @@ ENTRYPOINT ["/app"]
 ```
 
 ```go
-// main.go: ポートバインドは 0.0.0.0 で行うこと
+// main.go: bind to 0.0.0.0
 http.ListenAndServe("0.0.0.0:3000", handler)
 ```
 
-#### Rust の例
+#### Rust
 
 ```dockerfile
 FROM rust:1.77-alpine AS builder
@@ -260,14 +257,14 @@ ENTRYPOINT ["/my-app"]
 ```
 
 ```rust
-// main.rs: 0.0.0.0 でリッスンすること
+// main.rs: listen on 0.0.0.0
 let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
 axum::serve(listener, app).await?;
 ```
 
-auth-proxy自体もRustで書かれており、同じ `scratch` ベースのマルチステージビルドパターンを使っています。自分のアプリも同じ構成にすることでイメージサイズを最小化できます。
+auth-proxy itself is written in Rust and uses the same `scratch`-based multi-stage build pattern. Using the same approach for your app minimizes image size.
 
-#### Node.js (Express) の例
+#### Node.js (Express)
 
 ```dockerfile
 FROM node:20-slim
@@ -279,76 +276,75 @@ CMD ["node", "server.js"]
 ```
 
 ```js
-// server.js: host を省略すると 0.0.0.0 になる（Node.jsのデフォルト）
+// server.js: omitting host defaults to 0.0.0.0 in Node.js
 app.listen(3000);
 ```
 
-#### 既存イメージ（変更なし）をそのまま使う場合
+#### Using an Existing Official Image
 
-nginxやWordPress等、公式イメージがすでにあるアプリはDockerfileを書く必要がありません。そのままComposeに書けばOKです。
+For apps like nginx or WordPress that already have official images, no Dockerfile is needed. Reference the image directly in Compose.
 
 ```yaml
-# docker-compose.yml の app サービス部分
+# docker-compose.yml — app service section
 app:
-  image: nginx:alpine          # 公式イメージをそのまま使う
+  image: nginx:alpine
   volumes:
     - ./html:/usr/share/nginx/html:ro
-  # ports: は書かない（auth-proxyが中継するため不要）
+  # No ports: — auth-proxy handles all incoming traffic
 ```
 
 ---
 
-#### Dockerfileって何？書いてはみたけど…
+#### What Is a Dockerfile?
 
-Dockerfileは「イメージの作り方のレシピ」です。これで上流サービスの作り方が整いました。auth-proxyのイメージと併せてあとで、一緒にビルドして、一つのDockerサービスとして纏めて動くようにします。
+A Dockerfile is a recipe that tells Docker how to build an image. Once your app's image is defined, Docker Compose builds and runs both auth-proxy and your app together as a single service stack.
 
 ```
-Dockerfile（レシピ）
+Dockerfile (recipe)
     │
-    │ docker build（料理する。あなたのアプリとauth-proxyを併せて一つのDockerイメージにします）
+    │ docker build  (builds your app image alongside auth-proxy)
     ▼
-Dockerイメージ（完成品。サーバー上に保存される）
+Docker image  (stored on the server)
     │
-    │ docker compose up（実際に動かす）
+    │ docker compose up  (runs the containers)
     ▼
-コンテナ（動いているプロセス）
+Container  (running process)
 ```
 
-#### ディレクトリ構成のイメージ
-
-auth-proxy側のファイルと自分のアプリのファイルを同じ場所に置いて作業する感じです。
+#### Suggested Directory Layout
 
 ```
-my-project/                     ← 作業ディレクトリ（任意の名前でOK）
-├── docker-compose.yml          ← auth-proxyとアプリをまとめて管理するぞ、と言うレシピ。 (Step.2)
-├── .env.auth-proxy             ← auth-proxy側の設定
+my-project/                     ← working directory (any name)
+├── docker-compose.yml          ← manages auth-proxy + your app together  (Step 2)
+├── .env.auth-proxy             ← auth-proxy configuration
 │
-└── my-app/                     ← 自分のアプリ(上流サービス)のリポジトリ
-    ├── Dockerfile              ← Step 1 で作成したもの。自分のアプリのレシピ
-    ├── main.py（またはmain.go等）
+└── my-app/                     ← your upstream app repository
+    ├── Dockerfile              ← created in Step 1
+    ├── main.py  (or main.go, etc.)
     └── ...
 ```
 
-#### 
+---
 
-### Step 2: docker-compose.yml を作成する
+### Step 2: Create docker-compose.yml
 
 ```bash
 cp docker-compose.example.yml docker-compose.yml
 ```
 
-`docker-compose.yml` を編集して `app` サービスを自分のアプリに置き換える。**`app` サービスに `ports:` は書かないこと！**これがネットワーク隔離の核心。書いてしまうと、auth-proxy飛ばしてそのポートからサービスが見えてしまうので注意！
+Edit `docker-compose.yml` and replace the `app` service with your own. **Do not add `ports:` to the `app` service.** That is the key to network isolation — adding ports would expose the upstream service directly, bypassing auth-proxy entirely.
 
 ```yaml
 services:
   auth-proxy:
-    # ↓ いずれか一つを選択してコメントアウトを解除してください
-    image: ghcr.io/your-org/auth-proxy:latest    # 【推奨】公開イメージを使う場合
-    # build: .                                     # 【開発】ローカルでビルドする場合
+    # Uncomment exactly one of the following:
+    image: ghcr.io/your-org/auth-proxy:latest    # [Recommended] use the published image
+    # build: .                                     # [Development] build locally
     ports:
-      - "127.0.0.1:${AUTH_PROXY_HOST_PORT:-8080}:8080"   # ホスト側ポート (環境変数で変更可)
+      - "127.0.0.1:${AUTH_PROXY_HOST_PORT:-8080}:8080"   # host-side port (configurable via env var)
     volumes:
-      - auth-proxy-data:/var/lib/auth-proxy
+      # Mount ./data on the host. DB and data persist in ./data even if the container is removed.
+      - ./data:/var/lib/auth-proxy
     env_file:
       - .env.auth-proxy
     networks:
@@ -358,135 +354,119 @@ services:
       - app
 
   app:
-    # ↓ 自分のアプリに応じていずれか1行を選ぶ（他の行はコメントアウトのままにする）
-    build: ./my-app             # 【自作アプリ】./my-app/Dockerfile からビルドする
-    # image: my-app:latest      # 【ビルド済み】すでにビルドしたイメージを使う
-    # image: nginx:alpine       # 【公式イメージ】Dockerfileなしでそのまま使う
-    # ports: は絶対に書かない ← ネットワーク隔離❗
+    # Uncomment exactly one of the following:
+    build: ./my-app             # [Custom app] build from ./my-app/Dockerfile
+    # image: my-app:latest      # [Pre-built] use an already-built image
+    # image: nginx:alpine       # [Official image] use directly without a Dockerfile
+    # No ports: ← this is the network isolation ❗
     networks:
       - internal
     restart: unless-stopped
 
 networks:
   internal:
-    internal: true
-
-volumes:
-  auth-proxy-data:
+    # Setting internal: true blocks all outbound internet access from containers on this network.
+    # Do not set this if your upstream app needs to call external APIs.
+    # Network isolation is already achieved by not publishing ports on the app service;
+    # internal: true is not required.
 ```
 
-`AUTH_PROXY_UPSTREAM_APP_URL` はComposeのサービス名（上記のdocker-compose.ymlを利用している場合は `app`）を使って指定します。
+Set `AUTH_PROXY_UPSTREAM_APP_URL` using the Compose service name (e.g. `app`) as the hostname:
 
 ```dotenv
 # .env.auth-proxy
-AUTH_PROXY_UPSTREAM_APP_URL=http://app:3000   # "app" はComposeのサービス名、3000はアプリのポート
+AUTH_PROXY_UPSTREAM_APP_URL=http://app:3000   # "app" matches the service name in docker-compose.yml
 ```
 
-アプリが別のポートでリッスンしている場合（例: 8000番）はそこを変更してください。サービス名はdocker-compose.ymlの `services:` の下のキー名に合わせること！
+If your app listens on a different port (e.g. 8000), update the port number accordingly.
 
-**ホスト側のポートについて**: docker-compose.yml の `ports:` 設定では `${AUTH_PROXY_HOST_PORT:-8080}` を使用しており、デフォルトは 8080 です。別のポートを使う場合は以下のいずれかで変更できます：
-- `export AUTH_PROXY_HOST_PORT=9000` の後に `docker compose up`
-- または docker-compose.yml の `ports:` セクションを直接編集
+**Host-side port**: `docker-compose.yml` uses `${AUTH_PROXY_HOST_PORT:-8080}`, defaulting to 8080. To use a different port:
+- `AUTH_PROXY_HOST_PORT=9000 docker compose up`, or
+- edit the `ports:` section in `docker-compose.yml` directly.
 
 ---
 
-### Step 3: 環境変数ファイルを作成する
+### Step 3: Create the Environment File
 
 ```bash
 cp .env.auth-proxy.example .env.auth-proxy
 ```
 
-最低限以下を設定してください。どれもauth-proxyが参照します。
+Set at minimum:
 
 ```dotenv
 AUTH_PROXY_UPSTREAM_APP_URL=http://app:3000
-AUTH_PROXY_DB_PATH=/var/lib/auth-proxy/auth-proxy.db
-AUTH_PROXY_LISTEN_ADDR=0.0.0.0:8080   # コンテナ内のリッスンアドレス（固定値）
+AUTH_PROXY_DB_PATH=/var/lib/auth-proxy/auth-proxy.db  # must match the volume mount path in docker-compose.yml
+AUTH_PROXY_LISTEN_ADDR=0.0.0.0:8080   # fixed value inside the container
 AUTH_PROXY_SESSION_TTL_HOURS=8
 AUTH_PROXY_ISSUER_NAME=my-service
-AUTH_PROXY_MFA_ENCRYPTION_KEY=xxx    # ← openssl rand -hex 32などで作成したランダムシードを記載
-AUTH_PROXY_GUEST_TOKEN_SECRET=yyy    # ← openssl rand -hex 32などで作成したランダムシードを記載
-AUTH_PROXY_GUEST_TOKEN_API_KEY=zzz   # ← openssl rand -hex 32などで作成したランダムシードを記載
+AUTH_PROXY_MFA_ENCRYPTION_KEY=xxx    # generate with: openssl rand -hex 32
+AUTH_PROXY_GUEST_TOKEN_SECRET=yyy    # generate with: openssl rand -hex 32
+AUTH_PROXY_GUEST_TOKEN_API_KEY=zzz   # generate with: openssl rand -hex 32
 ```
 
-**ポート設定について**:
-- `AUTH_PROXY_LISTEN_ADDR=0.0.0.0:8080` はコンテナ内部のリッスンアドレスで固定（変更不要）
-- ホスト側のポートは docker-compose.yml の `${AUTH_PROXY_HOST_PORT:-8080}` で制御（環境変数で変更可）
+**About port settings**:
+- `AUTH_PROXY_LISTEN_ADDR=0.0.0.0:8080` is the listen address inside the container. Leave it as-is.
+- The host-side port is controlled by `${AUTH_PROXY_HOST_PORT:-8080}` in `docker-compose.yml`.
 
-`AUTH_PROXY_MFA_ENCRYPTION_KEY` 等のシークレットは一度生成したら変更しないこと。変更するとMFAの再設定が必要になります。
+**About data persistence**:
+- The `./data:/var/lib/auth-proxy` bind mount stores the DB on the host under `./data/`.
+- Running `docker compose down` removes containers but leaves `./data/` untouched.
+- The `.env.auth-proxy` file lives on the host and is never affected by container lifecycle.
+
+Do not change `AUTH_PROXY_MFA_ENCRYPTION_KEY` or other secrets after initial setup. Changing them invalidates existing MFA configurations.
 
 ---
 
-### Step 4: Dockerイメージのビルド
-
-いよいよ、dockerイメージの作成します。
-先ほどの以下の様なフォルダ構成になっているとして、`my-project`ディレクトリに移動します。
-
-```
-my-project/                     ← 作業ディレクトリ（任意の名前でOK）
-├── docker-compose.yml          ← auth-proxyとアプリをまとめて管理するぞ、と言うレシピ。 (Step.2)
-├── .env.auth-proxy             ← auth-proxy側の設定
-│
-└── my-app/                     ← 自分のアプリ(上流サービス)のリポジトリ
-    ├── Dockerfile              ← Step 1 で作成したもの。自分のアプリのレシピ
-    ├── main.py（またはmain.go等）
-    └── ...
-```
-
-以下のコマンドを実行してください。dockerのインストールが出来ていない場合は[公式ページ](https://docs.docker.com/engine/install/)よりインストールしてください。
+### Step 4: Build the Docker Images
 
 ```bash
 docker compose build
 
-# 実行例と出力イメージ:
-# => [app builder 1/5] FROM golang:1.22-alpine   ← ベースイメージをダウンロード
-# => [app builder 2/5] COPY go.mod go.sum ./      ← ファイルをコピー
-# => [app builder 3/5] RUN go mod download         ← 依存をダウンロード
-# => [app builder 4/5] RUN go build -o app .       ← コンパイル
-# => [app] COPY --from=builder /build/app /app     ← 実行イメージに配置
-# => exporting to image                             ← イメージ完成
+# Example output:
+# => [app builder 1/5] FROM golang:1.22-alpine
+# => [app builder 2/5] COPY go.mod go.sum ./
+# => [app builder 3/5] RUN go mod download
+# => [app builder 4/5] RUN go build -o app .
+# => [app] COPY --from=builder /build/app /app
+# => exporting to image
 ```
 
-無事にビルドが完了すると、イメージファイルがローカル環境に保存されます。以下のコマンドで確認してみてください：
+Verify the images were created:
 
 ```bash
 docker images
 # REPOSITORY         TAG       IMAGE ID       SIZE
-# my-project-app     latest    abc123def456   8.2MB   ← 自分のアプリ
-# auth-proxy         latest    xyz789ghi012   4.1MB   ← auth-proxy
+# my-project-app     latest    abc123def456   8.2MB
+# auth-proxy         latest    xyz789ghi012   4.1MB
 ```
 
-##### コードを変更したときの再ビルド
-
-アプリのコードを変更したら都度 `docker compose build` を再実行してイメージを更新し、コンテナを再起動します。（起動などは次のステップで説明します）
+To rebuild after changing application code:
 
 ```bash
-# コード変更後
-docker compose build app        # appサービスだけビルドし直す
-docker compose up -d app        # appコンテナだけ再起動する
+docker compose build app    # rebuild only the app image
+docker compose up -d app    # restart only the app container
 ```
 
+---
 
-
-### Step.5 初回起動と管理者ユーザー作成
-
-それではauth-proxyと上流サービスを起動してみましょう。最初に管理者ユーザーを作ります。管理者は上流サービス（あなたのアプリ）にアクセス出来るユーザーを管理できます。
+### Step 5: First Launch and Admin User Setup
 
 ```bash
-# アプリイメージのビルド（コード変更後は再度ビルドしてください）
+# Build images
 docker compose build
 
-# 管理者ユーザーを対話的に作成します（初回のみ行ってください）
+# Create the first admin user interactively (run once only)
 docker compose run --rm auth-proxy init-admin
 
-# 管理者ユーザーが出来れば後はバックグラウンドで起動します
+# Start all services in the background
 docker compose up -d
 
-# ログで正常起動を確認
+# Verify startup via logs
 docker compose logs -f auth-proxy
 ```
 
-正常起動時のログ例:
+Expected log output on successful startup:
 
 ```
 auth-proxy  | INFO auth_proxy: listening on 0.0.0.0:8080
@@ -494,13 +474,13 @@ auth-proxy  | INFO auth_proxy: upstream: http://app:3000
 auth-proxy  | INFO auth_proxy: mode: proxy
 ```
 
+---
 
+### Step 6: Route Traffic via Traefik or nginx
 
-### Step 6: Traefik / nginx からルーティングする
+Point your Traefik or nginx configuration at auth-proxy's host port (`127.0.0.1:8080`).
 
-auth-proxyのポート（`127.0.0.1:8080`）にTraefikまたはnginxから向けるように設定してください。以下は参考情報です:
-
-**Traefik 設定例（ホスト直接で動かしている場合）**:
+**Traefik example (running directly on the host)**:
 
 ```yaml
 http:
@@ -518,13 +498,13 @@ http:
           - url: "http://127.0.0.1:8080"
 ```
 
-**nginx 設定例**:
+**nginx example**:
 
 ```nginx
 server {
     listen 443 ssl;
     server_name app.example.com;
-    # ... TLS設定 ...
+    # ... TLS configuration ...
 
     location / {
         proxy_pass http://127.0.0.1:8080;
@@ -534,37 +514,42 @@ server {
 }
 ```
 
+---
 
+## Environment Variable Reference
 
-## 環境変数リファレンス
-
-| 変数 | 必須 | デフォルト | 説明 |
+| Variable | Required | Default | Description |
 |---|---|---|---|
-| `AUTH_PROXY_SERVE_PATH` | ※1 | — | 静的ファイルを配信するディレクトリパス |
-| `AUTH_PROXY_UPSTREAM_APP_URL` | ※1 | — | 上流サービスの URL（例: `http://app:3000`） |
-| `AUTH_PROXY_DB_PATH` | — | `auth_proxy.db` | SQLite データベースファイルパス |
-| `AUTH_PROXY_LISTEN_ADDR` | — | `0.0.0.0:8080` | サーバーがリッスンするアドレス・ポート（コンテナ内部） |
-| `AUTH_PROXY_SESSION_TTL_HOURS` | — | `8` | セッション有効期間（時間） |
-| `AUTH_PROXY_ISSUER_NAME` | — | `auth-proxy` | `X-Auth-Issuer` ヘッダーの値 |
-| `AUTH_PROXY_MFA_ENCRYPTION_KEY` | — | ※2 | TOTP シークレットの暗号化キー（hex 64文字） |
-| `AUTH_PROXY_GUEST_TOKEN_SECRET` | — | ※2 | ゲストトークン署名キー（hex 64文字） |
-| `AUTH_PROXY_GUEST_TOKEN_API_KEY` | — | ※2 | ゲストトークン発行 API の認証キー |
-| `AUTH_PROXY_HOST_PORT` | — | `8080` | docker-compose ホスト側のバインドポート（環境変数） |
-| `RUST_LOG` | — | `info` | ログレベル（`trace` / `debug` / `info` / `warn` / `error`） |
+| `AUTH_PROXY_SERVE_PATH` | ※1 | — | Directory path to serve as static files |
+| `AUTH_PROXY_UPSTREAM_APP_URL` | ※1 | — | Upstream service URL (e.g. `http://app:3000`) |
+| `AUTH_PROXY_DB_PATH` | — | `auth_proxy.db` | SQLite database file path |
+| `AUTH_PROXY_LISTEN_ADDR` | — | `0.0.0.0:8080` | Address and port the server listens on (inside the container) |
+| `AUTH_PROXY_SESSION_TTL_HOURS` | — | `8` | Session lifetime in hours |
+| `AUTH_PROXY_ISSUER_NAME` | — | `auth-proxy` | Value of the `X-Auth-Issuer` header |
+| `AUTH_PROXY_MFA_ENCRYPTION_KEY` | — | ※2 | TOTP secret encryption key (64 hex characters) |
+| `AUTH_PROXY_GUEST_TOKEN_SECRET` | — | ※2 | Guest token signing key (64 hex characters) |
+| `AUTH_PROXY_GUEST_TOKEN_API_KEY` | — | ※2 | API key for the guest token issuance endpoint |
+| `AUTH_PROXY_HOST_PORT` | — | `8080` | Host-side bind port for Docker Compose |
+| `RUST_LOG` | — | `info` | Log level (`trace` / `debug` / `info` / `warn` / `error`) |
 
-※1 `AUTH_PROXY_SERVE_PATH` と `AUTH_PROXY_UPSTREAM_APP_URL` はいずれか一方または両方を設定してください。両方未設定の場合は起動エラーになります。
+※1 Set at least one of `AUTH_PROXY_SERVE_PATH` or `AUTH_PROXY_UPSTREAM_APP_URL`. Both unset is a startup error.
 
-※2 デフォルト値はあるが本番環境では必ず `openssl rand -hex 32` で生成した値を設定してください。
+※2 Has a default, but always generate a proper value with `openssl rand -hex 32` for production.
 
-**ポート設定について**:
-- **`AUTH_PROXY_LISTEN_ADDR`** (コンテナ内部):
-  - シングルバイナリ（静的ファイルモード）: `.env` に `AUTH_PROXY_LISTEN_ADDR=127.0.0.1:8080` を明示
-  - Docker モード: `0.0.0.0:8080` で固定（変更不要）
-- **`AUTH_PROXY_HOST_PORT`** (ホスト側):
-  - Docker Compose でのみ使用。環境変数で docker-compose.yml の `ports:` 設定を制御
-  - 例: `AUTH_PROXY_HOST_PORT=9000 docker compose up` でホスト側のポートを 9000 に変更
+**Port settings**:
+- **`AUTH_PROXY_LISTEN_ADDR`** (inside the container):
+  - Single binary (static file mode): set `AUTH_PROXY_LISTEN_ADDR=127.0.0.1:8080` explicitly in `.env`
+  - Docker mode: leave as `0.0.0.0:8080` (no change needed)
+- **`AUTH_PROXY_HOST_PORT`** (host side, Docker Compose only):
+  - Controls the `ports:` binding in `docker-compose.yml`
+  - Example: `AUTH_PROXY_HOST_PORT=9000 docker compose up` binds port 9000 on the host
 
-### 設定例（静的ファイルモード）
+**Data persistence**:
+- Docker mode uses a bind mount (`./data:/var/lib/auth-proxy`). The DB file is stored in `./data/` on the host.
+- `docker compose down` removes containers but does not touch `./data/`. Adding `-v` removes named volumes but not bind-mount directories; use plain `down` to be safe.
+- The `.env.auth-proxy` file lives on the host and is never affected by container lifecycle.
+
+### Configuration Example (Static File Mode)
 
 ```dotenv
 AUTH_PROXY_SERVE_PATH=/var/www/html
@@ -577,11 +562,11 @@ AUTH_PROXY_GUEST_TOKEN_API_KEY=<openssl rand -hex 32>
 RUST_LOG=info
 ```
 
-### 設定例（プロキシモード / Docker）
+### Configuration Example (Proxy Mode / Docker)
 
 ```dotenv
 AUTH_PROXY_UPSTREAM_APP_URL=http://app:3000
-AUTH_PROXY_DB_PATH=/var/lib/auth-proxy/auth-proxy.db
+AUTH_PROXY_DB_PATH=/var/lib/auth-proxy/auth-proxy.db  # must match the volume mount path in docker-compose.yml
 AUTH_PROXY_LISTEN_ADDR=0.0.0.0:8080
 AUTH_PROXY_SESSION_TTL_HOURS=8
 AUTH_PROXY_MFA_ENCRYPTION_KEY=<openssl rand -hex 32>
@@ -592,21 +577,19 @@ RUST_LOG=info
 
 ---
 
-## CLIリファレンス
+## CLI Reference
 
-auth-proxy は以下のサブコマンドを持っています。
-
-| コマンド | 説明 |
+| Command | Description |
 |---|---|
-| `serve` | サーバー起動 |
-| `init-admin` | 最初の管理者ユーザーを対話的に作成 |
-| `hash` | パスワードの Argon2id ハッシュを生成 |
-| `verify <username>` | ユーザーのパスワードを検証（デバッグ用） |
-| `list` | 登録済みユーザーを一覧表示 |
+| `serve` | Start the server |
+| `init-admin` | Interactively create the first admin user |
+| `hash` | Generate an Argon2id hash of a password |
+| `verify <username>` | Verify a user's password (for debugging) |
+| `list` | List all registered users |
 
-### 静的ファイルモード（シングルバイナリ）の場合
+### Static File Mode (Single Binary)
 
-バイナリを直接実行できます。
+Run the binary directly:
 
 ```bash
 auth-proxy init-admin
@@ -615,42 +598,42 @@ auth-proxy verify alice
 auth-proxy hash
 ```
 
-### プロキシモード（Docker）の場合
+### Proxy Mode (Docker)
 
-コンテナ内のバイナリに対して `docker compose exec` または `docker compose run` 経由で実行します。**直接ターミナルから `auth-proxy` コマンドは実行できません。**
+Use `docker compose exec` or `docker compose run` to run commands inside the container. **You cannot run `auth-proxy` directly from your terminal in this mode.**
 
 ```bash
-# サーバーが起動している状態で実行するコマンド（exec）
+# Commands to run while the server is already running (exec)
 docker compose exec auth-proxy auth-proxy list
 docker compose exec auth-proxy auth-proxy verify alice
 docker compose exec auth-proxy auth-proxy hash
 
-# サーバーを起動せずに一時コンテナで実行するコマンド（run）
-# init-admin はサーバー起動前に実行するため run を使う
+# Commands to run before starting the server, in a temporary container (run)
+# init-admin is typically run before first startup
 docker compose run --rm auth-proxy init-admin
 ```
 
-`exec` と `run` の使い分けですが、`exec` は起動中のコンテナに入って実行します。`run` は新しい一時コンテナを起動して実行し、終了後に削除します（`--rm`）。`init-admin` のようにサーバーがまだ起動していない初回セットアップ時に使うのが `run` です。
+`exec` attaches to a running container. `run` starts a temporary container and removes it after the command finishes (`--rm`). Use `run` for initial setup when the server is not yet running.
 
 ---
 
-## 上流サービスへのヘッダー伝達
+## Headers Forwarded to Upstream
 
-**プロキシモードのみ適用されます。**静的ファイルモードではこの章は関係ありません。
+**Applies to proxy mode only.** This section is not relevant for static file mode.
 
-認証済みリクエストを転送する際、auth-proxyは以下のヘッダーを付与して、上流サービスに渡します。
+auth-proxy adds the following headers to every authenticated request before forwarding it upstream:
 
-| ヘッダー | 内容 | 例 |
+| Header | Content | Example |
 |---|---|---|
-| `X-Auth-User` | ユーザー名 | `alice` |
-| `X-Auth-User-Id` | ユーザーID（変更されない数値。OIDC の `sub` 相当） | `42` |
-| `X-Auth-Role` | ロール | `admin` または `user` |
-| `X-Auth-Issuer` | `AUTH_PROXY_ISSUER_NAME` の値 | `auth-proxy` |
-| `X-Auth-Guest` | ゲストトークンアクセス時のみ `true`。通常セッションには付与しない | `true` |
+| `X-Auth-User` | Username | `alice` |
+| `X-Auth-User-Id` | User ID (stable integer, equivalent to OIDC `sub`) | `42` |
+| `X-Auth-Role` | Role | `admin` or `user` |
+| `X-Auth-Issuer` | Value of `AUTH_PROXY_ISSUER_NAME` | `auth-proxy` |
+| `X-Auth-Guest` | `true` for guest token access only; absent for normal sessions | `true` |
 
-ユーザー名は変更される可能性があるため、上流サービスが永続的にユーザーを識別する場合は `X-Auth-User-Id` を主キーとして扱ってください。
+Because usernames can change, use `X-Auth-User-Id` as the stable identifier when the upstream service needs to associate records with a specific user.
 
-### 実装例
+### Implementation Examples
 
 ```python
 # Python (Flask)
@@ -659,7 +642,7 @@ def index():
     user_id  = request.headers.get("X-Auth-User-Id")   # "42"
     username = request.headers.get("X-Auth-User")       # "alice"
     role     = request.headers.get("X-Auth-Role")       # "user" | "admin"
-    # 認証処理は不要。ヘッダーを読むだけでよい
+    # No auth logic needed — just read the headers
 ```
 
 ```go
@@ -673,11 +656,11 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 ---
 
-## ゲストトークン機能
+## Guest Token Feature
 
-ログイン不要の限定公開アクセスを、認証の文脈で一元管理できる機能です。上流サービスはどのパスを共有するかを auth-proxy に伝えるだけでよく、トークン生成・検証・期限管理はすべて auth-proxy が行います。
+Guest tokens allow limited, unauthenticated access to specific paths — managed centrally within auth-proxy. The upstream service only needs to tell auth-proxy which path to share; token generation, verification, and expiry are all handled by auth-proxy.
 
-### トークン発行
+### Issuing a Token
 
 ```bash
 curl -X POST https://your-domain/api/guest-token \
@@ -689,128 +672,129 @@ curl -X POST https://your-domain/api/guest-token \
     "max_uses": 10,
     "password": "secret123",
     "ui": {
-      "title": "Q3レポート",
-      "description": "招待メールに記載のパスワードを入力してください"
+      "title": "Q3 Report",
+      "description": "Enter the password from your invitation email"
     }
   }'
 ```
 
-| パラメータ | 必須 | 説明 |
+| Parameter | Required | Description |
 |---|---|---|
-| `path` | ✅ | アクセスを許可するパスプレフィックス（`/` で始まること） |
-| `expires_in` | ✅ | 有効期間（秒） |
-| `max_uses` | — | 最大アクセス回数。省略で無制限 |
-| `password` | — | パスワード。省略するとURLのみでアクセス可能 |
-| `ui.title` / `ui.description` | — | パスワード入力フォームに表示するテキスト |
+| `path` | ✅ | Path prefix to allow access to (must start with `/`) |
+| `expires_in` | ✅ | Token lifetime in seconds |
+| `max_uses` | — | Maximum number of accesses. Omit for unlimited. |
+| `password` | — | Optional password. Omit to allow access via URL alone. |
+| `ui.title` / `ui.description` | — | Text displayed on the password entry form |
 
-### エンドユーザーのアクセス
+### End-User Access
 
 ```
 https://your-domain/shared/report?guest_token=<token>
 ```
 
-パスワードが設定されている場合はフォームが表示され、正しいパスワードを入力すると `guest_session_id` Cookie が発行されます。
+If a password is set, a form is displayed. After entering the correct password, a `guest_session_id` cookie is issued, allowing continued access without re-entering the token in the URL.
 
 ---
 
-## 運用
+## Operations
 
-### ユーザー管理
+### User Management
 
-ユーザー管理はブラウザの管理画面から行うのが基本です。CLIはデバッグや緊急時の補助手段として使います。
+Use the browser-based admin UI for day-to-day user management. The CLI is a secondary tool for debugging or emergencies.
 
 ```bash
-# ブラウザで管理画面を開く（両モード共通）
+# Open the admin UI in a browser (both modes)
 https://your-domain/admin/users
 ```
 
-CLIでの確認（モードによって実行方法が異なります）:
+CLI verification (method differs by mode):
 
 ```bash
-# 静的ファイルモード（シングルバイナリ）
+# Static file mode (single binary)
 auth-proxy list
 auth-proxy verify alice
 
-# プロキシモード（Docker）
+# Proxy mode (Docker)
 docker compose exec auth-proxy auth-proxy list
 docker compose exec auth-proxy auth-proxy verify alice
 ```
 
-### ログ確認
+### Viewing Logs
 
 ```bash
-# 静的ファイルモード（systemd）
+# Static file mode (systemd)
 sudo journalctl -u auth-proxy -f
 sudo journalctl -u auth-proxy -n 100
 
-# プロキシモード（Docker）
+# Proxy mode (Docker)
 docker compose logs -f auth-proxy
 docker compose logs --tail=100 auth-proxy
 ```
 
 ---
 
-## トラブルシューティング
+## Troubleshooting
 
-### サーバーが起動しない
+### Server Won't Start
 
-| エラー | 原因 | 対処 |
+| Error | Cause | Fix |
 |---|---|---|
-| `Neither AUTH_PROXY_SERVE_PATH nor AUTH_PROXY_UPSTREAM_APP_URL is set` | モード指定なし | いずれか一方または両方を `.env` に設定する |
-| `Path does not exist: /path/to/...` | `AUTH_PROXY_SERVE_PATH` のディレクトリが存在しない | ディレクトリを作成するか、パスを修正する |
-| `Address already in use` | ポートが使用中 | `AUTH_PROXY_LISTEN_ADDR` を変更するか競合プロセスを停止する |
-| DBのパーミッションエラー | 書き込み権限なし | `/var/lib/auth-proxy` のオーナーをサービス実行ユーザーに変更する |
+| `Neither AUTH_PROXY_SERVE_PATH nor AUTH_PROXY_UPSTREAM_APP_URL is set` | No mode configured | Set at least one in `.env` |
+| `Path does not exist: /path/to/...` | `AUTH_PROXY_SERVE_PATH` directory missing | Create the directory or correct the path |
+| `Address already in use` | Port in use | Change `AUTH_PROXY_LISTEN_ADDR` or stop the conflicting process |
+| DB permission error | No write access | Ensure Docker can write to the `./data` directory |
+| Data lost after `docker compose down -v` | `-v` removes volumes | With a bind mount (`./data`), the directory itself is not removed even with `-v`, but use plain `down` to be safe |
 
-### ログインできない
+### Can't Log In
 
-まずログを確認してエラーメッセージを特定してみましょう。
+First, check the logs to identify the error:
 
 ```bash
-# 静的ファイルモード
+# Static file mode
 sudo journalctl -u auth-proxy -n 50
 
-# プロキシモード（Docker）
+# Proxy mode (Docker)
 docker compose logs --tail=50 auth-proxy
 ```
 
-ユーザーの存在とパスワードを確認してみてください。
+Then verify the user exists and the password is correct:
 
 ```bash
-# 静的ファイルモード
+# Static file mode
 auth-proxy list
 auth-proxy verify alice
 
-# プロキシモード（Docker）
+# Proxy mode (Docker)
 docker compose exec auth-proxy auth-proxy list
 docker compose exec auth-proxy auth-proxy verify alice
 ```
 
-### 上流サービスに到達できない（プロキシモードのみ）
+### Can't Reach the Upstream Service (Proxy Mode Only)
 
-`AUTH_PROXY_UPSTREAM_APP_URL` のサービス名とポートが正しいか確認してみましょう。Dockerモードではホスト名にComposeのサービス名（例: `http://app:3000`）を使います。`localhost` や `127.0.0.1` はコンテナ内ではauth-proxy自身を指すため使用できません。
+Verify the service name and port in `AUTH_PROXY_UPSTREAM_APP_URL`. In Docker mode, use the Compose service name as the hostname (e.g. `http://app:3000`). `localhost` and `127.0.0.1` refer to auth-proxy itself inside the container and cannot be used to reach the upstream service.
 
 ```bash
-# auth-proxyコンテナから上流サービスに疎通できるか確認
-docker compose exec auth-proxy wget -qO- http://app:3000 || echo "到達不可"
+# Check connectivity from the auth-proxy container to the upstream service
+docker compose exec auth-proxy wget -qO- http://app:3000 || echo "unreachable"
 
-# 両サービスが同じネットワークに接続されているか確認
+# Check that both services are on the same network
 docker compose ps
-docker network inspect <プロジェクト名>_internal
+docker network inspect <project-name>_internal
 ```
 
-### コンテナが起動しない（プロキシモードのみ）
+### Container Won't Start (Proxy Mode Only)
 
 ```bash
-# 終了したコンテナのログも含めて確認
+# View logs including exited containers
 docker compose logs auth-proxy
 
-# コンテナの状態を確認
+# Check container status
 docker compose ps -a
 ```
 
 ---
 
-## プロジェクト構成
+## Project Structure
 
 ```
 auth-proxy/
@@ -820,21 +804,21 @@ auth-proxy/
 ├── docker-compose.example.yml
 ├── .env.auth-proxy.example
 ├── .dockerignore
-├── migrations/                    # SQLite マイグレーションファイル
-├── internal/                      # 仕様書（非公開）
+├── migrations/                    # SQLite migration files
+├── internal/                      # Internal specification documents
 └── src/
-    ├── main.rs                    # エントリポイント・CLI ディスパッチ
-    ├── config.rs                  # 環境変数読み込み・モード検証
+    ├── main.rs                    # Entry point · CLI dispatch
+    ├── config.rs                  # Environment variable loading · mode validation
     ├── users.rs                   # UserStore (Argon2id)
     ├── session.rs                 # SessionStore
-    ├── mfa.rs                     # MfaStore (TOTP・バックアップコード・デバイス記憶)
-    ├── state.rs                   # AppState（DB・HTTPクライアント）
-    ├── router.rs                  # ルーティング定義
+    ├── mfa.rs                     # MfaStore (TOTP · backup codes · device tokens)
+    ├── state.rs                   # AppState (DB · HTTP client)
+    ├── router.rs                  # Route definitions
     ├── handlers/
     │   ├── login.rs               # GET/POST /login
     │   ├── logout.rs              # POST /logout
-    │   ├── proxy.rs               # /* フォールバック（静的ファイル or 上流転送）
-    │   ├── mfa.rs                 # MFA 検証フロー
+    │   ├── proxy.rs               # /* fallback (static files or upstream proxy)
+    │   ├── mfa.rs                 # MFA verification flow
     │   ├── settings/
     │   │   ├── mod.rs             # GET/POST /settings/mfa/*
     │   │   └── security.rs        # GET/POST /settings/security/*
@@ -843,8 +827,8 @@ auth-proxy/
     │       ├── dashboard.rs       # GET /admin/
     │       └── users.rs           # GET/POST /admin/users/*
     ├── middleware/
-    │   ├── auth.rs                # セッション検証・X-Auth-* 偽装防止
-    │   └── admin.rs               # 管理者ロール確認
+    │   ├── auth.rs                # Session validation · X-Auth-* spoofing prevention
+    │   └── admin.rs               # Admin role check
     └── cli/
         ├── hash.rs
         ├── verify.rs
