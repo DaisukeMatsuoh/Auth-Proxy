@@ -41,7 +41,12 @@ pub enum ConfigError {
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 }
-
+/// Load .env.auth-proxy (project-specific) first, then .env (default)
+fn load_env_file() {
+    // Try .env.auth-proxy first for project-specific overrides, then fall back to .env
+    let _ = dotenvy::from_filename(".env.auth-proxy")
+        .or_else(|_| dotenvy::dotenv());
+}
 impl Config {
     /// Load .env or .env.auth-proxy if it exists
     fn load_env_file() {
