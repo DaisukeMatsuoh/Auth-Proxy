@@ -41,12 +41,7 @@ pub enum ConfigError {
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 }
-/// Load .env.auth-proxy (project-specific) first, then .env (default)
-fn load_env_file() {
-    // Try .env.auth-proxy first for project-specific overrides, then fall back to .env
-    let _ = dotenvy::from_filename(".env.auth-proxy")
-        .or_else(|_| dotenvy::dotenv());
-}
+
 impl Config {
     /// Load .env or .env.auth-proxy if it exists
     fn load_env_file() {
@@ -95,9 +90,14 @@ impl Config {
             }
         }
 
-        let listen_addr_str = std::env::var("AUTH_PROXY_LISTEN_ADDR")
-            .or_else(|_| std::env::var("APP_LISTEN_ADDR"))  // fallback for compatibility
-            .unwrap_or_else(|_| "0.0.0.0:8080".to_string());
+        // Read listen address (host:port). Split into separate components for flexibility.
+        let listen_host = std::env::var("AUTH_PROXY_LISTEN_ADDR")
+            .unwrap_or_else(|_| "0.0.0.0".to_string());
+
+        let listen_port = std::env::var("AUTH_PROXY_LISTEN_PORT")
+            .unwrap_or_else(|_| "8080".to_string());
+
+        let listen_addr_str = format!("{}:{}", listen_host, listen_port);
         let listen_addr = listen_addr_str.parse::<SocketAddr>()
             .map_err(|_| ConfigError::InvalidAddr(listen_addr_str))?;
 

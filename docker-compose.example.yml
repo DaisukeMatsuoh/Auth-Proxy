@@ -15,11 +15,14 @@ services:
     ports:
       # Host port configurable via ${AUTH_PROXY_HOST_PORT} env var (default: 8080)
       # Point Traefik / nginx here. Never bind to 0.0.0.0 directly on public hosts.
-      - "127.0.0.1:${AUTH_PROXY_HOST_PORT:-8080}:8080"
+      - "127.0.0.1:${AUTH_PROXY_HOST_PORT:-8080}:${AUTH_PROXY_LISTEN_PORT:-8080}"
     volumes:
       - ./data:/var/lib/auth-proxy
     env_file:
       - .env.auth-proxy
+    environment:
+      # Pass .env values to container so auth-proxy reads AUTH_PROXY_LISTEN_PORT
+      AUTH_PROXY_LISTEN_PORT: ${AUTH_PROXY_LISTEN_PORT:-8080}
     networks:
       - internal
     restart: unless-stopped

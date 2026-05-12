@@ -37,6 +37,7 @@ Set at least one of `AUTH_PROXY_SERVE_PATH` or `AUTH_PROXY_UPSTREAM_APP_URL`. **
 - [Deploy: Proxy Mode (Docker)](#deploy-proxy-mode-docker)
 - [Environment Variable Reference](#environment-variable-reference)
 - [CLI Reference](#cli-reference)
+- [User Security Settings](#user-security-settings)
 - [Headers Forwarded to Upstream](#headers-forwarded-to-upstream)
 - [Guest Token Feature](#guest-token-feature)
 - [Operations](#operations)
@@ -341,7 +342,7 @@ services:
     image: ghcr.io/your-org/auth-proxy:latest    # [Recommended] use the published image
     # build: .                                     # [Development] build locally
     ports:
-      - "127.0.0.1:${AUTH_PROXY_HOST_PORT:-8080}:8080"   # host-side port (configurable via env var)
+      - "127.0.0.1:${AUTH_PROXY_HOST_PORT:-8080}:${AUTH_PROXY_LISTEN_PORT:-8080}"   # ${HOST}:${CONTAINER}
     volumes:
       # Mount ./data on the host. DB and data persist in ./data even if the container is removed.
       - ./data:/var/lib/auth-proxy
@@ -386,18 +387,37 @@ If your app listens on a different port (e.g. 8000), update the port number acco
 
 ---
 
-### Step 3: Create the Environment File
+### Step 3: Create the Environment Files
+
+**Two environment files are needed:**
+
+#### 3a. Create `.env` (Docker Compose configuration)
+
+If `.env` does **not** already exist (or if your upstream app doesn't use it):
+
+```bash
+cp .env.example .env
+```
+
+If `.env` **already exists** (your upstream app is already using it), add these two lines:
+
+```dotenv
+AUTH_PROXY_HOST_PORT=8080              # host-side port (can be changed per deployment)
+AUTH_PROXY_LISTEN_PORT=8080            # container-side port (must match auth-proxy's listen port)
+```
+
+#### 3b. Create `.env.auth-proxy` (auth-proxy application configuration)
 
 ```bash
 cp .env.auth-proxy.example .env.auth-proxy
 ```
 
-Set at minimum:
+Edit it and set at minimum:
 
 ```dotenv
 AUTH_PROXY_UPSTREAM_APP_URL=http://app:3000
 AUTH_PROXY_DB_PATH=/var/lib/auth-proxy/auth-proxy.db  # must match the volume mount path in docker-compose.yml
-AUTH_PROXY_LISTEN_ADDR=0.0.0.0:8080   # fixed value inside the container
+AUTH_PROXY_LISTEN_ADDR=0.0.0.0                        # listen address (host part only; port comes from .env)
 AUTH_PROXY_SESSION_TTL_HOURS=8
 AUTH_PROXY_ISSUER_NAME=my-service
 AUTH_PROXY_MFA_ENCRYPTION_KEY=xxx    # generate with: openssl rand -hex 32
@@ -406,8 +426,10 @@ AUTH_PROXY_GUEST_TOKEN_API_KEY=zzz   # generate with: openssl rand -hex 32
 ```
 
 **About port settings**:
-- `AUTH_PROXY_LISTEN_ADDR=0.0.0.0:8080` is the listen address inside the container. Leave it as-is.
-- The host-side port is controlled by `${AUTH_PROXY_HOST_PORT:-8080}` in `docker-compose.yml`.
+- Port configuration is in `.env` only (not `.env.auth-proxy`):
+  - `AUTH_PROXY_HOST_PORT`: port on the host machine (where you access auth-proxy from)
+  - `AUTH_PROXY_LISTEN_PORT`: port inside the container (what docker-compose.yml maps)
+- `AUTH_PROXY_LISTEN_ADDR` in `.env.auth-proxy` contains only the address part (e.g., `0.0.0.0`); the port comes from `.env`'s `AUTH_PROXY_LISTEN_PORT`.
 
 **About data persistence**:
 - The `./data:/var/lib/auth-proxy` bind mount stores the DB on the host under `./data/`.
@@ -614,6 +636,50 @@ docker compose run --rm auth-proxy init-admin
 ```
 
 `exec` attaches to a running container. `run` starts a temporary container and removes it after the command finishes (`--rm`). Use `run` for initial setup when the server is not yet running.
+
+---
+
+## User Security Settings
+
+All logged-in users can manage their own account security at `/settings/security` without involving an administrator.
+
+| Feature | URL | Description |
+|---|---|---|
+| Security settings | `/settings/security` | Overview of MFA status, remaining backup codes, and remembered devices |
+| Change password | `/settings/security/password` | Change password after confirming the current one |
+| Enable MFA | `/settings/security` → MFA setup button | Scan a QR code with an authenticator app. Eight backup codes are issued on completion. |
+| Disable MFA | `/settings/security` → disable button | Requires current password confirmation. Backup codes and device tokens are deleted at the same time. |
+| Revoke all remembered devices | `/settings/security` → revoke button | Deletes all device tokens saved via "Remember this device for 30 days" |
+
+### Password Change Flow
+
+```
+/settings/security
+    └── "Change password" link
+            ↓
+    /settings/security/password
+        · Current password
+        · New password (8 characters minimum)
+        · New password (confirm)
+            ↓ Submit
+        Success → password updated → redirect to /settings/security
+        Failure → form re-displayed with error message (500 ms delay)
+```
+
+### MFA Setup Flow
+
+```
+/settings/security
+    └── "Enable two-factor authentication" button
+            ↓
+    QR code displayed (scan with authenticator app)
+    or manual entry secret (Base32)
+            ↓ Enter confirmation code and submit
+    Eight backup codes displayed
+    (these are shown only once — save them somewhere safe)
+            ↓
+    MFA enabled → TOTP required on next login
+```
 
 ---
 
