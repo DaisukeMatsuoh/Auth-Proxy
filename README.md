@@ -119,7 +119,7 @@ sudo mkdir -p /etc/auth-proxy /var/lib/auth-proxy
 sudo cp .env.auth-proxy.example /etc/auth-proxy/.env
 sudo chmod 600 /etc/auth-proxy/.env
 
-# 3. Edit .env (set AUTH_PROXY_SERVE_PATH, AUTH_PROXY_LISTEN_ADDR=127.0.0.1:8080, etc.)
+# 3. Edit .env (set AUTH_PROXY_SERVE_PATH, AUTH_PROXY_LISTEN_ADDR=127.0.0.1, AUTH_PROXY_LISTEN_PORT=8080, etc.)
 sudo vim /etc/auth-proxy/.env
 
 # 4. Create the first admin user
@@ -342,12 +342,17 @@ services:
     image: ghcr.io/your-org/auth-proxy:latest    # [Recommended] use the published image
     # build: .                                     # [Development] build locally
     ports:
-      - "127.0.0.1:${AUTH_PROXY_HOST_PORT:-8080}:${AUTH_PROXY_LISTEN_PORT:-8080}"   # ${HOST}:${CONTAINER}
+      # ${AUTH_PROXY_HOST_PORT}: host-side port (from .env)
+      # ${AUTH_PROXY_LISTEN_PORT}: container-side port (from .env)
+      # Point Traefik / nginx here. Never bind to 0.0.0.0 directly on public hosts.
+      - "127.0.0.1:${AUTH_PROXY_HOST_PORT:-8080}:${AUTH_PROXY_LISTEN_PORT:-8080}"
     volumes:
-      # Mount ./data on the host. DB and data persist in ./data even if the container is removed.
       - ./data:/var/lib/auth-proxy
     env_file:
       - .env.auth-proxy
+    environment:
+      # Pass .env values to container so auth-proxy reads AUTH_PROXY_LISTEN_PORT
+      AUTH_PROXY_LISTEN_PORT: ${AUTH_PROXY_LISTEN_PORT:-8080}
     networks:
       - internal
     restart: unless-stopped
@@ -366,10 +371,6 @@ services:
 
 networks:
   internal:
-    # Setting internal: true blocks all outbound internet access from containers on this network.
-    # Do not set this if your upstream app needs to call external APIs.
-    # Network isolation is already achieved by not publishing ports on the app service;
-    # internal: true is not required.
 ```
 
 Set `AUTH_PROXY_UPSTREAM_APP_URL` using the Compose service name (e.g. `app`) as the hostname:
@@ -381,9 +382,7 @@ AUTH_PROXY_UPSTREAM_APP_URL=http://app:3000   # "app" matches the service name i
 
 If your app listens on a different port (e.g. 8000), update the port number accordingly.
 
-**Host-side port**: `docker-compose.yml` uses `${AUTH_PROXY_HOST_PORT:-8080}`, defaulting to 8080. To use a different port:
-- `AUTH_PROXY_HOST_PORT=9000 docker compose up`, or
-- edit the `ports:` section in `docker-compose.yml` directly.
+**Host-side port**: `docker-compose.yml` uses `${AUTH_PROXY_HOST_PORT:-8080}`, defaulting to 8080. To use a different port refer Step 3 and confiture `.env` file.
 
 ---
 
@@ -418,18 +417,25 @@ Edit it and set at minimum:
 AUTH_PROXY_UPSTREAM_APP_URL=http://app:3000
 AUTH_PROXY_DB_PATH=/var/lib/auth-proxy/auth-proxy.db  # must match the volume mount path in docker-compose.yml
 AUTH_PROXY_LISTEN_ADDR=0.0.0.0                        # listen address (host part only; port comes from .env)
+# PORT SETTINGS:
+# - Static file mode: set AUTH_PROXY_LISTEN_PORT below
+# - Docker Compose (Proxy mode): AUTH_PROXY_LISTEN_PORT is set in .env, not here (and will override this value)
+AUTH_PROXY_LISTEN_PORT=8080         # [Static mode only] Uncomment and set the port for static file mode
+
 AUTH_PROXY_SESSION_TTL_HOURS=8
 AUTH_PROXY_ISSUER_NAME=my-service
 AUTH_PROXY_MFA_ENCRYPTION_KEY=xxx    # generate with: openssl rand -hex 32
 AUTH_PROXY_GUEST_TOKEN_SECRET=yyy    # generate with: openssl rand -hex 32
 AUTH_PROXY_GUEST_TOKEN_API_KEY=zzz   # generate with: openssl rand -hex 32
+
 ```
 
 **About port settings**:
-- Port configuration is in `.env` only (not `.env.auth-proxy`):
+- Port configuration **must be in `.env` only** (not `.env.auth-proxy`):
   - `AUTH_PROXY_HOST_PORT`: port on the host machine (where you access auth-proxy from)
-  - `AUTH_PROXY_LISTEN_PORT`: port inside the container (what docker-compose.yml maps)
-- `AUTH_PROXY_LISTEN_ADDR` in `.env.auth-proxy` contains only the address part (e.g., `0.0.0.0`); the port comes from `.env`'s `AUTH_PROXY_LISTEN_PORT`.
+  - `AUTH_PROXY_LISTEN_PORT`: port inside the container (what docker-compose.yml maps to the container)
+- docker-compose.yml automatically passes `.env`'s `AUTH_PROXY_LISTEN_PORT` to the container via the `environment:` section, which **overrides** any value in `.env.auth-proxy`.
+- `AUTH_PROXY_LISTEN_ADDR` in `.env.auth-proxy` contains only the address part (e.g., `0.0.0.0`); the port always comes from `.env` in Proxy mode.
 
 **About data persistence**:
 - The `./data:/var/lib/auth-proxy` bind mount stores the DB on the host under `./data/`.
@@ -545,13 +551,14 @@ server {
 | `AUTH_PROXY_SERVE_PATH` | ※1 | — | Directory path to serve as static files |
 | `AUTH_PROXY_UPSTREAM_APP_URL` | ※1 | — | Upstream service URL (e.g. `http://app:3000`) |
 | `AUTH_PROXY_DB_PATH` | — | `auth_proxy.db` | SQLite database file path |
-| `AUTH_PROXY_LISTEN_ADDR` | — | `0.0.0.0:8080` | Address and port the server listens on (inside the container) |
+| `AUTH_PROXY_LISTEN_ADDR` | — | `0.0.0.0` | Listen address (host part only; port configured separately) |
+| `AUTH_PROXY_LISTEN_PORT` | — | `8080` | Port the server listens on (inside container or on this host) |
+| `AUTH_PROXY_HOST_PORT` | — | `8080` | Host-side port for Docker Compose (`.env` only, not `.env.auth-proxy`) |
 | `AUTH_PROXY_SESSION_TTL_HOURS` | — | `8` | Session lifetime in hours |
 | `AUTH_PROXY_ISSUER_NAME` | — | `auth-proxy` | Value of the `X-Auth-Issuer` header |
 | `AUTH_PROXY_MFA_ENCRYPTION_KEY` | — | ※2 | TOTP secret encryption key (64 hex characters) |
 | `AUTH_PROXY_GUEST_TOKEN_SECRET` | — | ※2 | Guest token signing key (64 hex characters) |
 | `AUTH_PROXY_GUEST_TOKEN_API_KEY` | — | ※2 | API key for the guest token issuance endpoint |
-| `AUTH_PROXY_HOST_PORT` | — | `8080` | Host-side bind port for Docker Compose |
 | `RUST_LOG` | — | `info` | Log level (`trace` / `debug` / `info` / `warn` / `error`) |
 
 ※1 Set at least one of `AUTH_PROXY_SERVE_PATH` or `AUTH_PROXY_UPSTREAM_APP_URL`. Both unset is a startup error.
@@ -559,12 +566,20 @@ server {
 ※2 Has a default, but always generate a proper value with `openssl rand -hex 32` for production.
 
 **Port settings**:
-- **`AUTH_PROXY_LISTEN_ADDR`** (inside the container):
-  - Single binary (static file mode): set `AUTH_PROXY_LISTEN_ADDR=127.0.0.1:8080` explicitly in `.env`
-  - Docker mode: leave as `0.0.0.0:8080` (no change needed)
-- **`AUTH_PROXY_HOST_PORT`** (host side, Docker Compose only):
-  - Controls the `ports:` binding in `docker-compose.yml`
-  - Example: `AUTH_PROXY_HOST_PORT=9000 docker compose up` binds port 9000 on the host
+
+| Scenario | Where to set | Variables | Value |
+|---|---|---|---|
+| **Static File Mode** (systemd) | `.env.auth-proxy` | `AUTH_PROXY_LISTEN_ADDR` | `127.0.0.1` (address only) |
+| | | `AUTH_PROXY_LISTEN_PORT` | `8080` (or desired port) |
+| **Proxy Mode** (Docker) | `.env` | `AUTH_PROXY_HOST_PORT` | `8080` (host-side port; where you connect from) |
+| | | `AUTH_PROXY_LISTEN_PORT` | `8080` (container-side port; must match) |
+| | `.env.auth-proxy` | `AUTH_PROXY_LISTEN_ADDR` | `0.0.0.0` (address only) |
+| | | `AUTH_PROXY_LISTEN_PORT` | (not set; docker-compose.yml passes from `.env`) |
+
+**Why separate address and port?**
+- Flexibility: `AUTH_PROXY_LISTEN_ADDR` can be `127.0.0.1`, `0.0.0.0`, or any other address
+- Clear separation: `.env` (Docker infra) vs `.env.auth-proxy` (app config)
+- Docker Compose precedence: `.env` values override `.env.auth-proxy` values
 
 **Data persistence**:
 - Docker mode uses a bind mount (`./data:/var/lib/auth-proxy`). The DB file is stored in `./data/` on the host.
@@ -573,10 +588,12 @@ server {
 
 ### Configuration Example (Static File Mode)
 
+**`.env.auth-proxy`:**
 ```dotenv
 AUTH_PROXY_SERVE_PATH=/var/www/html
 AUTH_PROXY_DB_PATH=/var/lib/auth-proxy/auth-proxy.db
-AUTH_PROXY_LISTEN_ADDR=127.0.0.1:8080
+AUTH_PROXY_LISTEN_ADDR=127.0.0.1              # address part only
+AUTH_PROXY_LISTEN_PORT=8080                   # port part
 AUTH_PROXY_SESSION_TTL_HOURS=8
 AUTH_PROXY_MFA_ENCRYPTION_KEY=<openssl rand -hex 32>
 AUTH_PROXY_GUEST_TOKEN_SECRET=<openssl rand -hex 32>
@@ -586,10 +603,18 @@ RUST_LOG=info
 
 ### Configuration Example (Proxy Mode / Docker)
 
+**`.env`:**
+```dotenv
+AUTH_PROXY_HOST_PORT=8080          # host-side port (what Traefik/nginx connects to)
+AUTH_PROXY_LISTEN_PORT=8080        # container-side port (must match docker-compose.yml)
+```
+
+**`.env.auth-proxy`:**
 ```dotenv
 AUTH_PROXY_UPSTREAM_APP_URL=http://app:3000
 AUTH_PROXY_DB_PATH=/var/lib/auth-proxy/auth-proxy.db  # must match the volume mount path in docker-compose.yml
-AUTH_PROXY_LISTEN_ADDR=0.0.0.0:8080
+AUTH_PROXY_LISTEN_ADDR=0.0.0.0                        # address part only
+# AUTH_PROXY_LISTEN_PORT: do NOT set here; it comes from .env via docker-compose.yml
 AUTH_PROXY_SESSION_TTL_HOURS=8
 AUTH_PROXY_MFA_ENCRYPTION_KEY=<openssl rand -hex 32>
 AUTH_PROXY_GUEST_TOKEN_SECRET=<openssl rand -hex 32>
@@ -805,9 +830,9 @@ docker compose logs --tail=100 auth-proxy
 
 | Error | Cause | Fix |
 |---|---|---|
-| `Neither AUTH_PROXY_SERVE_PATH nor AUTH_PROXY_UPSTREAM_APP_URL is set` | No mode configured | Set at least one in `.env` |
+| `Neither AUTH_PROXY_SERVE_PATH nor AUTH_PROXY_UPSTREAM_APP_URL is set` | No mode configured | Set at least one in `.env.auth-proxy` |
 | `Path does not exist: /path/to/...` | `AUTH_PROXY_SERVE_PATH` directory missing | Create the directory or correct the path |
-| `Address already in use` | Port in use | Change `AUTH_PROXY_LISTEN_ADDR` or stop the conflicting process |
+| `Address already in use` | Port in use | Change `AUTH_PROXY_LISTEN_PORT` in `.env` (Proxy mode) or `.env.auth-proxy` (Static mode), or stop the conflicting process |
 | DB permission error | No write access | Ensure Docker can write to the `./data` directory |
 | Data lost after `docker compose down -v` | `-v` removes volumes | With a bind mount (`./data`), the directory itself is not removed even with `-v`, but use plain `down` to be safe |
 
