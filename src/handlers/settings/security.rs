@@ -364,13 +364,11 @@ pub async fn handle_password(
     }
 
     // Redirect to return_to if valid, otherwise to settings
-    let redirect_target = if let Some(rt) = form.return_to.as_ref()
-        .and_then(|rt| validate_return_to(rt))
-    {
-        rt
-    } else {
-        "/settings/security".to_string()
-    };
+    let redirect_target = form
+        .return_to
+        .as_deref()
+        .and_then(validate_return_to)
+        .unwrap_or_else(|| "/settings/security".to_string());
 
     Ok(Redirect::to(&redirect_target).into_response())
 }
