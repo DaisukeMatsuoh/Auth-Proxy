@@ -1,9 +1,10 @@
-// Security settings handlers - Phase 3a-2
+// Security settings handlers - Phase 3a-2 + Phase Me
 // Handles password changes and MFA backup code regeneration
+// Phase Me: return_to parameter support for upstream app integration
 
 use crate::AppState;
 use axum::{
-    extract::State,
+    extract::{State, Query},
     response::{Html, IntoResponse, Redirect, Response},
     http::StatusCode,
     Extension,
@@ -13,12 +14,14 @@ use serde::Deserialize;
 use std::time::Duration;
 use tokio::task::spawn_blocking;
 use crate::middleware::AuthUser;
+use html_escape;
 
 #[derive(Deserialize)]
 pub struct ChangePasswordForm {
     pub current_password: String,
     pub new_password: String,
     pub confirm_password: String,
+    pub return_to: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -26,10 +29,42 @@ pub struct RegenerateBackupCodesForm {
     pub current_password: String,
 }
 
+#[derive(Deserialize)]
+pub struct SecurityQuery {
+    pub return_to: Option<String>,
+}
+
+/// Validate return_to parameter (same logic as in handlers/me.rs)
+fn validate_return_to(return_to: &str) -> Option<String> {
+    if return_to.starts_with('/')
+        && !return_to.starts_with("//")
+        && !return_to.contains('\\')
+    {
+        Some(return_to.to_string())
+    } else {
+        None
+    }
+}
+
+/// Build back link HTML if return_to is valid
+fn build_back_link(return_to: Option<&str>) -> String {
+    if let Some(rt) = return_to {
+        if validate_return_to(rt).is_some() {
+            let escaped_url = html_escape::encode_text(rt);
+            return format!(
+                r#"<p class="mt-4"><a href="{}" class="inline-block">← アプリに戻る</a></p>"#,
+                escaped_url
+            );
+        }
+    }
+    String::new()
+}
+
 /// GET /settings/security - Show security settings page
 pub async fn show(
     State(state): State<AppState>,
     Extension(auth_user): Extension<AuthUser>,
+    Query(query): Query<SecurityQuery>,
 ) -> Result<Html<String>, StatusCode> {
     // Get user info
     let user = state.users.get_by_id(auth_user.id)
@@ -164,6 +199,7 @@ pub async fn show(
         .hover\:bg-gray-200:hover {{ background: #e5e7eb; }}
         .hover\:bg-red-100:hover {{ background: #fee2e2; }}
         .hover\:bg-blue-700:hover {{ background: #1d4ed8; }}
+        .mt-4 {{ margin-top: 16px; }}
     </style>
 </head>
 <body>
@@ -172,16 +208,23 @@ pub async fn show(
 
         <section>
             <h2>🔑 パスワード</h2>
-            <a href="/settings/security/password" class="inline-block">
+            <a href="/settings/security/password?return_to={}" class="inline-block">
                 パスワードを変更する
             </a>
         </section>
 
         {}
+
+        {}
     </div>
 </body>
 </html>"#,
-        mfa_section
+        query.return_to.as_ref()
+            .and_then(|rt| validate_return_to(rt))
+            .map(|rt| urlencoding::encode(&rt).to_string())
+            .unwrap_or_default(),
+        mfa_section,
+        build_back_link(query.return_to.as_deref())
     );
 
     Ok(Html(html))
@@ -190,10 +233,28 @@ pub async fn show(
 /// GET /settings/security/password - Show password change form
 pub async fn show_password(
     Extension(_auth_user): Extension<AuthUser>,
+    Query(query): Query<SecurityQuery>,
 ) -> Html<String> {
     let issuer_name = std::env::var("AUTH_PROXY_ISSUER_NAME")
         .or_else(|_| std::env::var("APP_ISSUER_NAME"))  // fallback for compatibility
         .unwrap_or_else(|_| "Auth Proxy".to_string());
+
+    let cancel_url = if let Some(rt) = query.return_to.as_ref()
+        .and_then(|rt| validate_return_to(rt))
+    {
+        let encoded = urlencoding::encode(&rt);
+        format!("/settings/security?return_to={}", encoded)
+    } else {
+        "/settings/security".to_string()
+    };
+
+    let hidden_return_to = if let Some(rt) = query.return_to.as_ref()
+        .and_then(|rt| validate_return_to(rt))
+    {
+        format!(r#"<input type="hidden" name="return_to" value="{}">"#, html_escape::encode_text(&rt))
+    } else {
+        String::new()
+    };
 
     let html = format!(
         r#"<!DOCTYPE html>
@@ -231,6 +292,7 @@ pub async fn show_password(
             </div>
             <h1>パスワードを変更する</h1>
             <form method="POST" action="/settings/security/password">
+                {}
                 <div class="form-group">
                     <label for="current_password">現在のパスワード</label>
                     <input type="password" id="current_password" name="current_password" required autofocus>
@@ -244,7 +306,7 @@ pub async fn show_password(
                     <input type="password" id="confirm_password" name="confirm_password" required>
                 </div>
                 <div class="button-group">
-                    <a href="/settings/security">キャンセル</a>
+                    <a href="{}">キャンセル</a>
                     <button type="submit">変更する</button>
                 </div>
             </form>
@@ -252,7 +314,9 @@ pub async fn show_password(
     </div>
 </body>
 </html>"#,
-        issuer_name
+        issuer_name,
+        hidden_return_to,
+        cancel_url
     );
 
     Html(html)
@@ -299,7 +363,16 @@ pub async fn handle_password(
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    Ok(Redirect::to("/settings/security").into_response())
+    // Redirect to return_to if valid, otherwise to settings
+    let redirect_target = if let Some(rt) = form.return_to.as_ref()
+        .and_then(|rt| validate_return_to(rt))
+    {
+        rt
+    } else {
+        "/settings/security".to_string()
+    };
+
+    Ok(Redirect::to(&redirect_target).into_response())
 }
 
 /// GET /settings/security/mfa/backup-codes/regenerate - Show regenerate confirmation form

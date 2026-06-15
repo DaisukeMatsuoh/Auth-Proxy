@@ -44,6 +44,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/settings/mfa/setup/confirm", post(handlers::settings::confirm_setup))
         .route("/settings/mfa/disable", post(handlers::settings::disable_mfa))
         .route("/settings/mfa/revoke-devices", post(handlers::settings::revoke_devices))
+        // Public API: /me (stable user settings URLs for upstream app integration - Phase Me)
+        .route("/me", get(handlers::me::redirect_to_security))
+        .route("/me/password", get(handlers::me::redirect_to_password))
+        .route("/me/mfa", get(handlers::me::redirect_to_mfa))
+        .route("/me/devices", get(handlers::me::redirect_to_devices))
         // Fallback route: static files (if APP_SERVE_PATH set) then upstream proxy
         .fallback(handlers::proxy::proxy_handler)
         // Apply auth middleware to all routes except /login, /logout, /mfa/*, and some explicit routes

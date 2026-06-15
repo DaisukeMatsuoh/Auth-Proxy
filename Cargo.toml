@@ -63,6 +63,12 @@ async-trait = "0.1"
 # Password input (CLI)
 rpassword = "7"
 
+# URL encoding for return_to parameter (Phase Me)
+urlencoding = "2"
+
+# HTML escaping for guest notice page (Phase Me)
+html-escape = "0.2"
+
 [dev-dependencies]
 axum-test = "20"
 tokio-test = "0.4"

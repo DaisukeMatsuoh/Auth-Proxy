@@ -5,6 +5,7 @@ pub mod proxy;
 pub mod admin;
 pub mod mfa;
 pub mod settings;
+pub mod me;
 
 // Re-export main handlers for convenience
 pub use login::{get_login, post_login};
