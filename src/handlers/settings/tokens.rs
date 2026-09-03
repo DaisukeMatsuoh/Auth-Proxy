@@ -11,7 +11,7 @@ use axum::{
 use serde::Deserialize;
 use crate::AppState;
 use crate::middleware::AuthUser;
-use crate::handlers::api_tokens::require_session_auth;
+use crate::handlers::api_tokens::{require_session_auth, validate_path_prefix};
 
 const PAGE_STYLE: &str = r#"
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -67,7 +67,7 @@ pub async fn show(
     let rows = state.api_tokens.list_for_user(auth_user.id).await.unwrap_or_default();
 
     let rows_html = if rows.is_empty() {
-        r#"<tr><td colspan="4" class="empty">まだトークンがありません</td></tr>"#.to_string()
+        r#"<tr><td colspan="5" class="empty">まだトークンがありません</td></tr>"#.to_string()
     } else {
         rows.iter()
             .map(|r| {
@@ -83,8 +83,11 @@ pub async fn show(
                         r.id
                     )
                 };
+                let scope = r.path_prefix.as_deref()
+                    .map(|p| format!("<code>{}</code>", html_escape::encode_text(p)))
+                    .unwrap_or_else(|| r#"<span class="muted">全パス</span>"#.to_string());
                 format!(
-                    r#"<tr><td>{name}</td><td>{last_used}</td><td>{}</td><td>{action}</td></tr>"#,
+                    r#"<tr><td>{name}</td><td>{scope}</td><td>{last_used}</td><td>{}</td><td>{action}</td></tr>"#,
                     r.created_at
                 )
             })
@@ -98,7 +101,7 @@ pub async fn show(
         <section>
             <h2>発行済みトークン</h2>
             <table>
-                <thead><tr><th>名前</th><th>最終利用</th><th>作成日</th><th></th></tr></thead>
+                <thead><tr><th>名前</th><th>スコープ</th><th>最終利用</th><th>作成日</th><th></th></tr></thead>
                 <tbody>{rows_html}</tbody>
             </table>
         </section>
@@ -108,6 +111,7 @@ pub async fn show(
             <p>ブラウザ以外のクライアント(デスクトップアプリ・CLI・CI等)から認証するためのトークンを発行します。</p>
             <form method="POST" action="/settings/security/tokens">
                 <input type="text" name="name" placeholder="例: Alice の MacBook" required maxlength="200">
+                <input type="text" name="path_prefix" placeholder="例: /sync/ (空欄で全パスにアクセス可能)" maxlength="200">
                 <button type="submit">トークンを発行</button>
             </form>
         </section>
@@ -121,6 +125,8 @@ pub async fn show(
 #[derive(Deserialize)]
 pub struct CreateTokenForm {
     pub name: String,
+    #[serde(default)]
+    pub path_prefix: String,
 }
 
 /// POST /settings/security/tokens - issue a new token and show it once
@@ -138,8 +144,17 @@ pub async fn create(
         return Redirect::to("/settings/security/tokens").into_response();
     }
 
+    let path_prefix = match validate_path_prefix(Some(&form.path_prefix)) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+
     let ttl_days = state.config.api_token_default_ttl_days;
-    let (_row, plaintext) = match state.api_tokens.create(auth_user.id, name, ttl_days).await {
+    let (_row, plaintext) = match state
+        .api_tokens
+        .create(auth_user.id, name, ttl_days, path_prefix.as_deref())
+        .await
+    {
         Ok(v) => v,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -224,7 +239,7 @@ mod tests {
         let response = create(
             State(state.clone()),
             Extension(session_user(1)),
-            Form(CreateTokenForm { name: "My Device".to_string() }),
+            Form(CreateTokenForm { name: "My Device".to_string(), path_prefix: String::new() }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -246,7 +261,7 @@ mod tests {
         let response = create(
             State(state),
             Extension(token_user(1)),
-            Form(CreateTokenForm { name: "Backdoor".to_string() }),
+            Form(CreateTokenForm { name: "Backdoor".to_string(), path_prefix: String::new() }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
@@ -258,7 +273,7 @@ mod tests {
         create(
             State(state.clone()),
             Extension(session_user(1)),
-            Form(CreateTokenForm { name: r#"<script>alert(1)</script>"#.to_string() }),
+            Form(CreateTokenForm { name: r#"<script>alert(1)</script>"#.to_string(), path_prefix: String::new() }),
         )
         .await;
 
@@ -273,7 +288,7 @@ mod tests {
     async fn test_revoke_cannot_revoke_other_users_token() {
         let state = AppState::test().await.unwrap();
         state.users.create("bob", "password123", "user").await.unwrap();
-        let (row, _plaintext) = state.api_tokens.create(1, "Alice's token", 0).await.unwrap();
+        let (row, _plaintext) = state.api_tokens.create(1, "Alice's token", 0, None).await.unwrap();
 
         // bob (user_id=2) attempts to revoke alice's token via the UI handler.
         let response = revoke(State(state.clone()), Extension(session_user(2)), Path(row.id)).await;

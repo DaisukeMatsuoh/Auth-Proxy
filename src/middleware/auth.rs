@@ -46,6 +46,20 @@ fn sanitize_header_value(s: &str) -> String {
     s.chars().filter(|c| !c.is_control()).collect()
 }
 
+/// RFC 6750-flavored 403 for a token restricted to a path scope it doesn't
+/// cover (Phase API-3, R7). Distinct from `invalid_token_response`: the
+/// token itself is valid, it just isn't allowed to reach this path.
+fn insufficient_scope_response() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": "insufficient_scope",
+            "error_description": "This token is not permitted to access this path"
+        })),
+    )
+        .into_response()
+}
+
 /// Extract session ID from cookies and attach X-Auth-* headers
 pub async fn auth_middleware(
     State(state): State<AppState>,
@@ -70,6 +84,16 @@ pub async fn auth_middleware(
                     let Ok(Some(token_row)) = state.api_tokens.verify(&token_hash).await else {
                         return invalid_token_response();
                     };
+
+                    // Path-scope restriction (Phase API-3, R7). Checked before
+                    // fetching the user so a scoped-out request costs one
+                    // fewer DB round trip.
+                    if let Some(prefix) = &token_row.path_prefix {
+                        if !req.uri().path().starts_with(prefix.as_str()) {
+                            return insufficient_scope_response();
+                        }
+                    }
+
                     let Ok(Some(user)) = state.users.get_by_id(token_row.user_id).await else {
                         return invalid_token_response();
                     };
@@ -213,6 +237,7 @@ mod tests {
     fn test_server(state: AppState) -> TestServer {
         let app = Router::new()
             .route("/echo", get(echo_auth_headers))
+            .route("/sync/echo", get(echo_auth_headers))
             .layer(from_fn_with_state(state.clone(), auth_middleware))
             .with_state(state);
         TestServer::new(app)
@@ -254,7 +279,7 @@ mod tests {
     async fn test_valid_token_sets_token_headers_and_no_set_cookie() {
         let state = build_state(true).await;
         let user = state.users.create("alice", "hunter2", "user").await.unwrap();
-        let (_row, plaintext) = state.api_tokens.create(user.id, "Alice's MacBook", 0).await.unwrap();
+        let (_row, plaintext) = state.api_tokens.create(user.id, "Alice's MacBook", 0, None).await.unwrap();
         let server = test_server(state);
 
         let response = server
@@ -268,6 +293,73 @@ mod tests {
         assert_eq!(body["x-auth-user"], "alice");
         assert_eq!(body["x-auth-method"], "token");
         assert_eq!(body["x-auth-token-name"], "Alice's MacBook");
+    }
+
+    /// Phase API-3 (R7): a token scoped to /sync/ can reach paths under it.
+    #[tokio::test]
+    async fn test_scoped_token_can_access_its_prefix() {
+        let state = build_state(true).await;
+        let user = state.users.create("alice", "hunter2", "user").await.unwrap();
+        let (_row, plaintext) = state
+            .api_tokens
+            .create(user.id, "Sync-only device", 0, Some("/sync/"))
+            .await
+            .unwrap();
+        let server = test_server(state);
+
+        let response = server
+            .get("/sync/echo")
+            .add_header("authorization", format!("Bearer {plaintext}"))
+            .await;
+
+        response.assert_status_ok();
+        let body = response.json::<serde_json::Value>();
+        assert_eq!(body["x-auth-user"], "alice");
+    }
+
+    /// Phase API-3 (R7) ★most important: a token scoped to /sync/ must be
+    /// rejected outside that prefix, with 403 insufficient_scope — not a
+    /// silent pass-through and not the generic invalid_token 401.
+    #[tokio::test]
+    async fn test_scoped_token_rejected_outside_its_prefix() {
+        let state = build_state(true).await;
+        let user = state.users.create("alice", "hunter2", "user").await.unwrap();
+        let (_row, plaintext) = state
+            .api_tokens
+            .create(user.id, "Sync-only device", 0, Some("/sync/"))
+            .await
+            .unwrap();
+        let server = test_server(state);
+
+        let response = server
+            .get("/echo")
+            .add_header("authorization", format!("Bearer {plaintext}"))
+            .await;
+
+        response.assert_status_forbidden();
+        let body = response.json::<serde_json::Value>();
+        assert_eq!(body["error"], "insufficient_scope");
+    }
+
+    /// A token with no path_prefix (None) keeps Phase API-1 behavior: full access.
+    #[tokio::test]
+    async fn test_unscoped_token_can_access_any_path() {
+        let state = build_state(true).await;
+        let user = state.users.create("alice", "hunter2", "user").await.unwrap();
+        let (_row, plaintext) = state.api_tokens.create(user.id, "Full-access device", 0, None).await.unwrap();
+        let server = test_server(state);
+
+        let response = server
+            .get("/echo")
+            .add_header("authorization", format!("Bearer {plaintext}"))
+            .await;
+        response.assert_status_ok();
+
+        let response = server
+            .get("/sync/echo")
+            .add_header("authorization", format!("Bearer {plaintext}"))
+            .await;
+        response.assert_status_ok();
     }
 
     #[tokio::test]
@@ -290,7 +382,7 @@ mod tests {
     async fn test_revoked_token_returns_401_not_redirect() {
         let state = build_state(true).await;
         let user = state.users.create("alice", "hunter2", "user").await.unwrap();
-        let (row, plaintext) = state.api_tokens.create(user.id, "Device", 0).await.unwrap();
+        let (row, plaintext) = state.api_tokens.create(user.id, "Device", 0, None).await.unwrap();
         state.api_tokens.revoke(row.id, user.id).await.unwrap();
         let server = test_server(state);
 
@@ -309,7 +401,7 @@ mod tests {
         // simply falls through to the (absent) session check.
         let state = build_state(false).await;
         let user = state.users.create("alice", "hunter2", "user").await.unwrap();
-        let (_row, plaintext) = state.api_tokens.create(user.id, "Device", 0).await.unwrap();
+        let (_row, plaintext) = state.api_tokens.create(user.id, "Device", 0, None).await.unwrap();
         let server = test_server(state);
 
         let response = server
@@ -333,7 +425,7 @@ mod tests {
     async fn test_token_auth_ignores_client_supplied_role_header() {
         let state = build_state(true).await;
         let user = state.users.create("alice", "hunter2", "user").await.unwrap();
-        let (_row, plaintext) = state.api_tokens.create(user.id, "Device", 0).await.unwrap();
+        let (_row, plaintext) = state.api_tokens.create(user.id, "Device", 0, None).await.unwrap();
         let server = test_server(state);
 
         let response = server

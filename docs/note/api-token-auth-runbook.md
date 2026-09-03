@@ -4,8 +4,9 @@
 **関連ADR**: [`decisions/0001-api-token-bearer-auth.md`](decisions/0001-api-token-bearer-auth.md)
 **作成日**: 2026-09-03
 **対象ブランチ**: `dev`
-**ステータス**: Phase API-1 実装済み・マージ済み。Phase API-2(R4 Web UI)も実装済み
-（`src/handlers/settings/tokens.rs`、`GET /me/tokens`、`/settings/security` からのリンク）。
+**ステータス**: Phase API-1・API-2 実装済み・マージ済み。Phase API-3はR7(パススコープ制限)のみ
+実装済み。R6(ペアリングコード)は[ADR 0002](decisions/0002-path-scope-accepted-pairing-code-rejected.md)
+により不採用。
 
 このドキュメントは、提案書の Phase API-1（R1・R2・R3・R5 = Bearer トークン認証の中核）を
 実装するための具体的な手順書である。R4（Web UI）以降は別フェーズ・別runbookとする（後述）。
@@ -67,7 +68,7 @@ CLAUDE.md のアーキテクチャ表を鵜呑みにしないこと。
 |---|---|---|
 | **Phase API-1** | R1（Bearerミドルウェア）+ R2（`api_tokens`テーブル）+ R3（401 JSON応答）+ R5（`X-Auth-Method`） | **✅ 対象** |
 | Phase API-2 | R4（トークン発行・失効のWeb UI、`/me/tokens`） | ❌ 別runbookで実施 |
-| Phase API-3 | R6（ペアリングコード）+ R7（パススコープ制限） | ❌ 未着手・要ADR |
+| Phase API-3 | R7（パススコープ制限）のみ実装。**R6（ペアリングコード）は不採用**（[ADR 0002](decisions/0002-path-scope-accepted-pairing-code-rejected.md)） | ✅ 対象 |
 | Phase API-4 | R8（レート制限）+ R9（CLI）+ R10（管理画面） | ❌ 未着手・要ADR |
 
 Phase API-1 が完了すると、`api_tokens` テーブルへの直接 INSERT でトークンを払い出し、
@@ -703,12 +704,10 @@ R6(ペアリング)・R7(パススコープ)のテスト項目は Phase API-1 �
 
 ## 7. 次フェーズへの引き継ぎ事項
 
-- **Phase API-2(R4 Web UI)**: `/me/tokens` → `/settings/security/tokens` のリダイレクト規約
-  (提案書§5 R4)は既存の`handlers/me.rs`のパターンに倣うこと。ただし現在`me.rs`自体が
-  壊れているため(§0.1)、まずそちらの健全化を待つ。
-- **Phase API-3(R6/R7)**: パススコープ(`path_prefix`)のカラムは本フェーズで先行して
-  スキーマに用意済み。検証ロジック追加のみで対応可能な設計にしてある。ペアリングコードは
-  新規テーブル`pairing_codes`が必要(提案書§5 R6)。未認証エンドポイントになるため、
-  タイミング攻撃対策を含め別ADRでレビューすること。
+- **Phase API-2(R4 Web UI)**: 実装済み。`/me/tokens` → `/settings/security/tokens`。
+- **Phase API-3(R7のみ)**: 実装済み(パススコープ制限)。**R6(ペアリングコード)は
+  [ADR 0002](decisions/0002-path-scope-accepted-pairing-code-rejected.md)により不採用と
+  決定**(未認証エンドポイントを新設するコストに見合う必要性が確認できなかったため)。
+  将来ニーズが明確になった場合は、その時点の具体的な運用課題を根拠に新規ADRで再検討する。
 - **Phase API-4(R8/R9/R10)**: レート制限は「メモリ上のカウンタで十分」という提案書の判断
   (§5 R8)をADRとして正式に承認するかどうか、実装前に判断が必要。

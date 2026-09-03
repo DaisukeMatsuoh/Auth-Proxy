@@ -117,6 +117,7 @@ There is currently no guest-token resolution step in this flow — see "Guest To
 | Phase Me | Stable `/me`, `/me/password`, `/me/mfa`, `/me/devices` redirect URLs for upstream app integration |
 | Phase API-1 | Bearer API token authentication for non-browser clients (`api_tokens` table, `X-Auth-Method`/`X-Auth-Token-Name` headers, RFC 6750-style 401 JSON errors, opt-in via `AUTH_PROXY_API_TOKEN_ENABLED`). See `docs/note/api-token-auth-runbook.md` and `docs/note/decisions/0001-api-token-bearer-auth.md` |
 | Phase API-2 | Web UI for issuing/revoking API tokens: `GET /me/tokens` → `/settings/security/tokens` (list, issue, revoke), linked from `/settings/security`. Session auth only, same `auth_method == "session"` guard as the Phase API-1 JSON API |
+| Phase API-3 | Path-scope restriction for API tokens (R7 only — R6 "pairing codes" was evaluated and explicitly rejected, see [ADR 0002](docs/note/decisions/0002-path-scope-accepted-pairing-code-rejected.md)). A token issued with `path_prefix` can only reach request paths starting with that prefix; `auth_middleware` returns `403 insufficient_scope` otherwise. `path_prefix == NULL` (default) keeps full access, unchanged from Phase API-1 |
 
 **Phase 4 ("Guest tokens") is NOT implemented**, despite being listed as done in older versions of this file. See "Guest Tokens — Not Yet Implemented" below.
 
@@ -177,6 +178,9 @@ In `auth_middleware`, the `Authorization: Bearer` check runs before the session 
 
 **`POST /api/tokens` and `DELETE /api/tokens/{id}` require session authentication, not token authentication.**  
 Check `AuthUser.auth_method == "session"` inside the handler. Allowing a valid API token to mint or revoke other tokens would let a single leaked token escalate into unlimited further tokens.
+
+**A path-scoped API token (`path_prefix` set) must be checked before the user is even looked up (Phase API-3, R7).**  
+In `auth_middleware`, the scope check happens right after `ApiTokenStoreDb::verify` succeeds and before `state.users.get_by_id`. On mismatch, return `403 insufficient_scope` — never silently widen access, and never fall through to full access. `path_prefix == None` means unrestricted (Phase API-1 behavior), unchanged.
 
 **`/admin/*` requires session authentication, not just `role == "admin"`.**  
 Every handler in `src/handlers/admin/` checks `auth_user.role != "admin" || auth_user.auth_method != "session"`. API tokens carry the owner's real `role`, so without the `auth_method` check, a leaked API token belonging to an admin would grant full admin-panel access (create admins, reset any password, delete users) even though the token was only ever meant to authenticate calls to the proxied upstream app. This was found and fixed via security review — see `docs/note/decisions/0001-api-token-bearer-auth.md`.

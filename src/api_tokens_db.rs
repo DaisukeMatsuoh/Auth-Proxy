@@ -57,7 +57,9 @@ impl ApiTokenStoreDb {
     }
 
     /// Issue a new token for a user and persist its hash.
-    /// `ttl_days == 0` means no expiration.
+    /// `ttl_days == 0` means no expiration. `path_prefix == None` means the
+    /// token can access every path (Phase API-1 behavior); `Some(prefix)`
+    /// restricts it to paths starting with `prefix` (Phase API-3, R7).
     /// Returns the stored row together with the plaintext token, which is
     /// never persisted and must only be returned to the caller once.
     pub async fn create(
@@ -65,6 +67,7 @@ impl ApiTokenStoreDb {
         user_id: i64,
         name: &str,
         ttl_days: u32,
+        path_prefix: Option<&str>,
     ) -> Result<(ApiTokenRow, String), ApiTokenDbError> {
         let (plaintext, hash) = Self::generate_token();
         let expires_at = if ttl_days > 0 {
@@ -74,12 +77,13 @@ impl ApiTokenStoreDb {
         };
 
         sqlx::query(
-            "INSERT INTO api_tokens (user_id, token_hash, name, expires_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO api_tokens (user_id, token_hash, name, expires_at, path_prefix) VALUES (?, ?, ?, ?, ?)",
         )
         .bind(user_id)
         .bind(&hash)
         .bind(name)
         .bind(&expires_at)
+        .bind(path_prefix)
         .execute(&self.pool)
         .await?;
 
@@ -193,7 +197,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_and_verify_token() {
         let (_pool, store, user_id) = setup_test_db().await;
-        let (row, plaintext) = store.create(user_id, "Alice's MacBook", 0).await.unwrap();
+        let (row, plaintext) = store.create(user_id, "Alice's MacBook", 0, None).await.unwrap();
         assert_eq!(row.user_id, user_id);
         assert!(row.expires_at.is_none());
 
@@ -213,7 +217,7 @@ mod tests {
     #[tokio::test]
     async fn test_verify_revoked_token_returns_none() {
         let (_pool, store, user_id) = setup_test_db().await;
-        let (row, plaintext) = store.create(user_id, "Device", 0).await.unwrap();
+        let (row, plaintext) = store.create(user_id, "Device", 0, None).await.unwrap();
         let hash = ApiTokenStoreDb::hash_token(&plaintext);
 
         assert!(store.revoke(row.id, user_id).await.unwrap());
@@ -223,7 +227,7 @@ mod tests {
     #[tokio::test]
     async fn test_verify_expired_token_returns_none() {
         let (pool, store, user_id) = setup_test_db().await;
-        let (_row, plaintext) = store.create(user_id, "Device", 0).await.unwrap();
+        let (_row, plaintext) = store.create(user_id, "Device", 0, None).await.unwrap();
         let hash = ApiTokenStoreDb::hash_token(&plaintext);
 
         // Force expiry into the past directly.
@@ -248,7 +252,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (row, _plaintext) = store.create(user_id, "Alice's token", 0).await.unwrap();
+        let (row, _plaintext) = store.create(user_id, "Alice's token", 0, None).await.unwrap();
 
         // bob (user_id=2) must not be able to revoke alice's token.
         let revoked = store.revoke(row.id, 2).await.unwrap();
@@ -270,8 +274,8 @@ mod tests {
             .await
             .unwrap();
 
-        store.create(user_id, "Alice's token", 0).await.unwrap();
-        store.create(2, "Bob's token", 0).await.unwrap();
+        store.create(user_id, "Alice's token", 0, None).await.unwrap();
+        store.create(2, "Bob's token", 0, None).await.unwrap();
 
         let alice_tokens = store.list_for_user(user_id).await.unwrap();
         assert_eq!(alice_tokens.len(), 1);
@@ -281,7 +285,7 @@ mod tests {
     #[tokio::test]
     async fn test_touch_last_used_sets_timestamp() {
         let (_pool, store, user_id) = setup_test_db().await;
-        let (row, _plaintext) = store.create(user_id, "Device", 0).await.unwrap();
+        let (row, _plaintext) = store.create(user_id, "Device", 0, None).await.unwrap();
         assert!(row.last_used_at.is_none());
 
         store.touch_last_used(row.id).await.unwrap();

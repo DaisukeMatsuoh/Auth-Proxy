@@ -26,6 +26,30 @@ pub(crate) fn require_session_auth(auth_user: &AuthUser) -> Result<(), Response>
     Ok(())
 }
 
+/// Normalize and validate an optional path-scope prefix (Phase API-3, R7).
+/// Blank input means "no restriction" (`None`). A non-empty prefix must
+/// start with `/`, otherwise it could never match a request path
+/// (`req.uri().path()` always starts with `/`) and the token would be
+/// silently unusable.
+pub(crate) fn validate_path_prefix(raw: Option<&str>) -> Result<Option<String>, Response> {
+    let Some(raw) = raw else { return Ok(None) };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if !trimmed.starts_with('/') {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_request",
+                "error_description": "path_prefix must start with '/'"
+            })),
+        )
+            .into_response());
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
 #[derive(Serialize)]
 pub struct TokenSummary {
     pub id: i64,
@@ -34,6 +58,7 @@ pub struct TokenSummary {
     pub created_at: String,
     pub expires_at: Option<String>,
     pub revoked: bool,
+    pub path_prefix: Option<String>,
 }
 
 /// GET /api/tokens - list the current user's tokens (never includes hashes)
@@ -60,6 +85,7 @@ pub async fn list_tokens(
             created_at: r.created_at,
             expires_at: r.expires_at,
             revoked: r.revoked_at.is_some(),
+            path_prefix: r.path_prefix,
         })
         .collect();
 
@@ -69,6 +95,9 @@ pub async fn list_tokens(
 #[derive(Deserialize)]
 pub struct CreateTokenRequest {
     pub name: String,
+    /// Optional path-scope prefix (Phase API-3, R7). `None`/blank = full access.
+    #[serde(default)]
+    pub path_prefix: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -77,6 +106,7 @@ pub struct CreateTokenResponse {
     pub name: String,
     /// Plaintext token. Present only in this response; never retrievable again.
     pub token: String,
+    pub path_prefix: Option<String>,
 }
 
 /// POST /api/tokens - issue a new token
@@ -100,14 +130,24 @@ pub async fn create_token(
             .into_response();
     }
 
+    let path_prefix = match validate_path_prefix(body.path_prefix.as_deref()) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+
     let ttl_days = state.config.api_token_default_ttl_days;
-    match state.api_tokens.create(auth_user.id, &body.name, ttl_days).await {
+    match state
+        .api_tokens
+        .create(auth_user.id, &body.name, ttl_days, path_prefix.as_deref())
+        .await
+    {
         Ok((row, plaintext)) => (
             StatusCode::CREATED,
             Json(CreateTokenResponse {
                 id: row.id,
                 name: row.name,
                 token: plaintext,
+                path_prefix: row.path_prefix,
             }),
         )
             .into_response(),
@@ -168,5 +208,58 @@ mod tests {
     #[test]
     fn test_require_session_auth_rejects_token() {
         assert!(require_session_auth(&token_user()).is_err());
+    }
+
+    #[test]
+    fn test_validate_path_prefix_none_or_blank_means_no_restriction() {
+        assert_eq!(validate_path_prefix(None).unwrap(), None);
+        assert_eq!(validate_path_prefix(Some("")).unwrap(), None);
+        assert_eq!(validate_path_prefix(Some("   ")).unwrap(), None);
+    }
+
+    #[test]
+    fn test_validate_path_prefix_accepts_leading_slash() {
+        assert_eq!(validate_path_prefix(Some("/sync/")).unwrap(), Some("/sync/".to_string()));
+        assert_eq!(validate_path_prefix(Some("  /sync/  ")).unwrap(), Some("/sync/".to_string()));
+    }
+
+    #[test]
+    fn test_validate_path_prefix_rejects_missing_leading_slash() {
+        // Without a leading slash, req.uri().path() (always "/...") could
+        // never match, silently locking the token out of everything.
+        assert!(validate_path_prefix(Some("sync/")).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_create_token_with_path_prefix_round_trips() {
+        let state = AppState::test().await.unwrap();
+        let response = create_token(
+            State(state),
+            Extension(session_user()),
+            Json(CreateTokenRequest {
+                name: "Sync-only device".to_string(),
+                path_prefix: Some("/sync/".to_string()),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["path_prefix"], "/sync/");
+    }
+
+    #[tokio::test]
+    async fn test_create_token_rejects_invalid_path_prefix() {
+        let state = AppState::test().await.unwrap();
+        let response = create_token(
+            State(state),
+            Extension(session_user()),
+            Json(CreateTokenRequest {
+                name: "Bad prefix".to_string(),
+                path_prefix: Some("sync".to_string()),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }
