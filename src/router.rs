@@ -38,6 +38,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/settings/security/mfa/disable", post(handlers::settings::disable_mfa))
         .route("/settings/security/mfa/revoke-devices", post(handlers::settings::revoke_devices))
         .route("/settings/security/mfa/backup-codes/regenerate", get(handlers::settings::security::show_regenerate_backup_codes).post(handlers::settings::security::handle_regenerate_backup_codes))
+        // API token management UI (Phase API-2). Session-auth only, enforced
+        // inside each handler (see require_session_auth) for the same reason
+        // as /api/tokens above.
+        .route("/settings/security/tokens", get(handlers::settings::tokens::show).post(handlers::settings::tokens::create))
+        .route("/settings/security/tokens/{id}/revoke", post(handlers::settings::tokens::revoke))
         // Legacy MFA settings routes (backward compatibility)
         .route("/settings/mfa", get(handlers::settings::show_mfa))
         .route("/settings/mfa/setup/start", post(handlers::settings::start_setup))
@@ -49,6 +54,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/me/password", get(handlers::me::redirect_to_password))
         .route("/me/mfa", get(handlers::me::redirect_to_mfa))
         .route("/me/devices", get(handlers::me::redirect_to_devices))
+        .route("/me/tokens", get(handlers::me::redirect_to_tokens))
         // API token management (Phase API-1). Session-auth only; enforced
         // inside each handler via AuthUser::auth_method, not at the router
         // level, since both session and token requests reach the same

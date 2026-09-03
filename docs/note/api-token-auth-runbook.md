@@ -4,7 +4,8 @@
 **関連ADR**: [`decisions/0001-api-token-bearer-auth.md`](decisions/0001-api-token-bearer-auth.md)
 **作成日**: 2026-09-03
 **対象ブランチ**: `dev`
-**ステータス**: 未着手（実装計画段階）
+**ステータス**: Phase API-1 実装済み・マージ済み。Phase API-2(R4 Web UI)も実装済み
+（`src/handlers/settings/tokens.rs`、`GET /me/tokens`、`/settings/security` からのリンク）。
 
 このドキュメントは、提案書の Phase API-1（R1・R2・R3・R5 = Bearer トークン認証の中核）を
 実装するための具体的な手順書である。R4（Web UI）以降は別フェーズ・別runbookとする（後述）。

@@ -218,6 +218,16 @@ pub async fn show(
 
         {}
 
+        <section>
+            <h2>🔗 API トークン</h2>
+            <p style="font-size: 14px; color: #6b7280; margin-bottom: 12px;">
+                デスクトップアプリ・CLI・CI等、ブラウザ以外のクライアントから認証するためのトークンを管理します。
+            </p>
+            <a href="/settings/security/tokens" class="inline-block">
+                API トークンを管理する
+            </a>
+        </section>
+
         {}
     </div>
 </body>

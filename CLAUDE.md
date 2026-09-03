@@ -115,7 +115,8 @@ There is currently no guest-token resolution step in this flow — see "Guest To
 | Phase 3a-2 | Admin-forced MFA disable, `/settings/security`, self-service password change, MFA status in admin user list |
 | Phase Docker | Dockerfile (scratch base, musl static binary), docker-compose.example.yml, .env.auth-proxy.example |
 | Phase Me | Stable `/me`, `/me/password`, `/me/mfa`, `/me/devices` redirect URLs for upstream app integration |
-| Phase API-1 | Bearer API token authentication for non-browser clients (`api_tokens` table, `X-Auth-Method`/`X-Auth-Token-Name` headers, RFC 6750-style 401 JSON errors, opt-in via `AUTH_PROXY_API_TOKEN_ENABLED`). See `docs/note/api-token-auth-runbook.md` and `docs/note/decisions/0001-api-token-bearer-auth.md`. Token issuance/revocation UI (`/me/tokens`, Phase API-2) is not yet implemented — see runbook §7 |
+| Phase API-1 | Bearer API token authentication for non-browser clients (`api_tokens` table, `X-Auth-Method`/`X-Auth-Token-Name` headers, RFC 6750-style 401 JSON errors, opt-in via `AUTH_PROXY_API_TOKEN_ENABLED`). See `docs/note/api-token-auth-runbook.md` and `docs/note/decisions/0001-api-token-bearer-auth.md` |
+| Phase API-2 | Web UI for issuing/revoking API tokens: `GET /me/tokens` → `/settings/security/tokens` (list, issue, revoke), linked from `/settings/security`. Session auth only, same `auth_method == "session"` guard as the Phase API-1 JSON API |
 
 **Phase 4 ("Guest tokens") is NOT implemented**, despite being listed as done in older versions of this file. See "Guest Tokens — Not Yet Implemented" below.
 
