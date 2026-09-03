@@ -156,6 +156,9 @@ In `auth_middleware`, the `Authorization: Bearer` check runs before the session 
 **`POST /api/tokens` and `DELETE /api/tokens/{id}` require session authentication, not token authentication.**  
 Check `AuthUser.auth_method == "session"` inside the handler. Allowing a valid API token to mint or revoke other tokens would let a single leaked token escalate into unlimited further tokens.
 
+**`/admin/*` requires session authentication, not just `role == "admin"`.**  
+Every handler in `src/handlers/admin/` checks `auth_user.role != "admin" || auth_user.auth_method != "session"`. API tokens carry the owner's real `role`, so without the `auth_method` check, a leaked API token belonging to an admin would grant full admin-panel access (create admins, reset any password, delete users) even though the token was only ever meant to authenticate calls to the proxied upstream app. This was found and fixed via security review — see `docs/note/decisions/0001-api-token-bearer-auth.md`.
+
 ---
 
 ## Environment Variables

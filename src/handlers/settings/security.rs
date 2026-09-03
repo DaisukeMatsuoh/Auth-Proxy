@@ -50,7 +50,10 @@ fn validate_return_to(return_to: &str) -> Option<String> {
 fn build_back_link(return_to: Option<&str>) -> String {
     if let Some(rt) = return_to {
         if validate_return_to(rt).is_some() {
-            let escaped_url = html_escape::encode_text(rt);
+            // encode_double_quoted_attribute (not encode_text) is required here:
+            // this value is embedded inside href="...", and encode_text does not
+            // escape `"`, which would let return_to break out of the attribute.
+            let escaped_url = html_escape::encode_double_quoted_attribute(rt);
             return format!(
                 r#"<p class="mt-4"><a href="{}" class="inline-block">← アプリに戻る</a></p>"#,
                 escaped_url
@@ -251,7 +254,7 @@ pub async fn show_password(
     let hidden_return_to = if let Some(rt) = query.return_to.as_ref()
         .and_then(|rt| validate_return_to(rt))
     {
-        format!(r#"<input type="hidden" name="return_to" value="{}">"#, html_escape::encode_text(&rt))
+        format!(r#"<input type="hidden" name="return_to" value="{}">"#, html_escape::encode_double_quoted_attribute(&rt))
     } else {
         String::new()
     };
@@ -576,4 +579,56 @@ fn error_password_form(_auth_user: &AuthUser, error_message: &str) -> Html<Strin
     );
 
     Html(html)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for the reflected-XSS finding: a return_to value
+    /// containing a `"` must not be able to break out of the href="..."
+    /// attribute via an unescaped quote.
+    #[test]
+    fn test_build_back_link_escapes_double_quote() {
+        let malicious = r#"/x" autofocus onfocus="alert(1)"#;
+        let html = build_back_link(Some(malicious));
+
+        assert!(
+            !html.contains(r#"" autofocus"#),
+            "double-quote must be escaped, got: {html}"
+        );
+        assert!(html.contains("&quot;"), "expected escaped quote in: {html}");
+    }
+
+    #[test]
+    fn test_build_back_link_empty_for_invalid_return_to() {
+        assert_eq!(build_back_link(Some("https://evil.com")), "");
+        assert_eq!(build_back_link(None), "");
+    }
+
+    /// Same regression, for the hidden <input value="..."> built inline in
+    /// show_password().
+    #[tokio::test]
+    async fn test_show_password_hidden_input_escapes_double_quote() {
+        let auth_user = AuthUser {
+            id: 1,
+            username: "alice".to_string(),
+            role: "user".to_string(),
+            auth_method: "session".to_string(),
+            token_name: None,
+        };
+        let malicious = r#"/x" autofocus onfocus="alert(1)"#;
+
+        let html = show_password(
+            Extension(auth_user),
+            Query(SecurityQuery { return_to: Some(malicious.to_string()) }),
+        )
+        .await
+        .0;
+
+        assert!(
+            !html.contains(r#"" autofocus"#),
+            "double-quote must be escaped in hidden input, got: {html}"
+        );
+    }
 }

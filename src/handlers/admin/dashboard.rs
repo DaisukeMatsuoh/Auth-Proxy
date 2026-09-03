@@ -12,7 +12,7 @@ pub async fn get_dashboard(
     Extension(auth_user): Extension<AuthUser>,
 ) -> impl IntoResponse {
     // Admin role check
-    if auth_user.role != "admin" {
+    if auth_user.role != "admin" || auth_user.auth_method != "session" {
         return (
             StatusCode::FORBIDDEN,
             Html("<h1>403 Forbidden</h1><p>You do not have permission to access this resource.</p>"),
@@ -109,4 +109,46 @@ pub async fn get_dashboard(
     );
 
     Html(html).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::AppState;
+
+    #[tokio::test]
+    async fn test_dashboard_rejects_token_authenticated_admin() {
+        let state = AppState::test().await.unwrap();
+        let auth_user = AuthUser {
+            id: 1,
+            username: "admin".to_string(),
+            role: "admin".to_string(),
+            auth_method: "token".to_string(),
+            token_name: Some("leaked-automation-token".to_string()),
+        };
+
+        let response = get_dashboard(State(state), Extension(auth_user))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_dashboard_allows_session_authenticated_admin() {
+        let state = AppState::test().await.unwrap();
+        let auth_user = AuthUser {
+            id: 1,
+            username: "admin".to_string(),
+            role: "admin".to_string(),
+            auth_method: "session".to_string(),
+            token_name: None,
+        };
+
+        let response = get_dashboard(State(state), Extension(auth_user))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 }

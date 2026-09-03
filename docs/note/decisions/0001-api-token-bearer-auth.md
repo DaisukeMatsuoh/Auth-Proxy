@@ -1,6 +1,6 @@
 # ADR 0001: API クライアント向け Bearer トークン認証の追加
 
-- **ステータス**: Proposed（提案・未実装。ユーザー承認待ち）
+- **ステータス**: Accepted（Phase API-1 実装済み。セキュリティレビューで検出された指摘は対応済み — 末尾の「追記」参照）
 - **日付**: 2026-09-03
 - **関連文書**: [提案書](../../auth-proxy-api-token-proposal_v1.md) / [実装Runbook](../api-token-auth-runbook.md)
 
@@ -157,3 +157,43 @@ CLAUDE.mdの「`use_count`はSQL側でアトミックに」という既存方針
 - CLAUDE.md のアーキテクチャ記述（`AuthContext` enum、ゲストトークン実装済みという記載）と
   実コードの乖離は本ADRの対象外だが、別途ドキュメント修正 Issue を起票することが望ましい
   （Runbook §0.2 参照）
+
+---
+
+## 追記（2026-09-03）: `/security-review` で検出した指摘と対応
+
+Phase API-1 実装後に `/security-review` skill でレビューを実施し、以下2件を確認・修正した。
+
+### 1. 【重要・修正済み】API トークンが `/admin/*` に対しても有効になっていた
+
+**指摘**: `auth_middleware` はトークン認証成功時も `AuthUser.role` に実際のDB上のロールをそのまま
+設定するが、`/admin/*` 配下の全ハンドラーは `auth_user.role == "admin"` のみを見ており、
+`auth_method`（session か token か）を区別していなかった。結果として、admin ユーザーが
+（上流アプリ用に）自分で発行した API トークンが漏洩すると、新規admin作成・任意ユーザーの
+パスワードリセット・ユーザー削除など、auth-proxy の管理画面そのものを乗っ取られる状態になっていた。
+
+これは決定3で述べた「`AuthUser` を素朴に拡張する」設計の見落としであり、
+「トークンは上流アプリへの認証専用であるべき」という本ADRの前提（§コンテキスト、§2）に反する。
+
+**対応**: `src/handlers/admin/*.rs` の全ハンドラー（および未配線だった `middleware/admin.rs`
+内の `admin_middleware`）の権限チェックを
+`if auth_user.role != "admin" || auth_user.auth_method != "session"` に変更。
+回帰テストを `handlers/admin/dashboard.rs` と `handlers/admin/users.rs` に追加し、
+token 認証済みの admin ロールユーザーが `/admin/*` へアクセスすると403になることを確認した。
+
+CLAUDE.md の Key Invariants に「`/admin/*` requires session authentication, not just
+`role == "admin"`」として追記済み。
+
+### 2. 【本ブランチ起因ではないが、ついでに修正】`return_to` の反射型XSS
+
+`src/handlers/settings/security.rs`（`build_back_link`、`show_password` の `hidden_return_to`）
+および `src/handlers/me.rs`（未配線の `render_guest_notice`）が、HTML属性（`href="..."` /
+`value="..."`）に埋め込む文字列のエスケープに `html_escape::encode_text` を使っていた。
+この関数は `&`/`<`/`>` のみをエスケープし `"` をエスケープしないため、`validate_return_to`
+が `"` を弾かないことと組み合わさり、`return_to=/x" autofocus onfocus="alert(1)` のような値で
+属性からの脱出が可能だった（反射型XSS）。
+
+`git diff origin/dev...HEAD` で確認した限り、このコード自体は本ブランチで新規に導入されたもの
+ではなく `origin/dev`（コミット `cc2e716`）に既に存在していたため、本来は本ADRのスコープ外だが、
+実装済みコードとして手を入れられる状態だったため、ついでに `html_escape::encode_double_quoted_attribute`
+（`"` も含めて適切にエスケープする関数）に置き換えて修正した。回帰テストを3箇所に追加済み。

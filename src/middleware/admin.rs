@@ -26,8 +26,8 @@ pub async fn admin_middleware(
     Extension(auth_user): Extension<AuthUser>,
     next: Next,
 ) -> Response {
-    // Check if user is admin
-    if auth_user.role != "admin" {
+    // Check if user is admin (session auth only; API tokens must never reach /admin/*)
+    if auth_user.role != "admin" || auth_user.auth_method != "session" {
         return (
             StatusCode::FORBIDDEN,
             "<!DOCTYPE html>

@@ -45,7 +45,10 @@ fn render_guest_notice(return_to: Option<&str>) -> Html<String> {
     let back_link = if let Some(rt) = return_to {
         if validate_return_to(rt).is_some() {
             // Safely escape HTML in the URL for href attribute
-            let escaped_url = html_escape::encode_text(rt);
+            // encode_double_quoted_attribute (not encode_text) is required here:
+            // this value is embedded inside href="...", and encode_text does not
+            // escape `"`, which would let return_to break out of the attribute.
+            let escaped_url = html_escape::encode_double_quoted_attribute(rt);
             format!(
                 r#"<p class="mt-4"><a href="{}" class="text-blue-600 hover:text-blue-700 underline">元のページに戻る</a></p>"#,
                 escaped_url
@@ -177,6 +180,20 @@ pub async fn redirect_to_devices(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression test for the reflected-XSS finding: a return_to value
+    /// containing a `"` must not be able to break out of the href="..."
+    /// attribute via an unescaped quote.
+    #[test]
+    fn test_render_guest_notice_escapes_double_quote() {
+        let malicious = r#"/x" autofocus onfocus="alert(1)"#;
+        let html = render_guest_notice(Some(malicious)).0;
+
+        assert!(
+            !html.contains(r#"" autofocus"#),
+            "double-quote must be escaped, got: {html}"
+        );
+    }
 
     #[test]
     fn test_validate_return_to_valid_path() {

@@ -52,7 +52,7 @@ pub async fn get_users(
     Extension(auth_user): Extension<AuthUser>,
 ) -> impl IntoResponse {
     // Admin role check
-    if auth_user.role != "admin" {
+    if auth_user.role != "admin" || auth_user.auth_method != "session" {
         return (
             StatusCode::FORBIDDEN,
             Html("<h1>403 Forbidden</h1>"),
@@ -175,7 +175,7 @@ pub async fn get_user_new(
     Extension(auth_user): Extension<AuthUser>,
 ) -> impl IntoResponse {
     // Admin role check
-    if auth_user.role != "admin" {
+    if auth_user.role != "admin" || auth_user.auth_method != "session" {
         return (
             StatusCode::FORBIDDEN,
             Html("<h1>403 Forbidden</h1>"),
@@ -263,7 +263,7 @@ pub async fn post_user_new(
     Form(req): Form<CreateUserRequest>,
 ) -> impl IntoResponse {
     // Admin role check
-    if auth_user.role != "admin" {
+    if auth_user.role != "admin" || auth_user.auth_method != "session" {
         return (
             StatusCode::FORBIDDEN,
             Html("<h1>403 Forbidden</h1>"),
@@ -311,7 +311,7 @@ pub async fn get_user_edit(
     Extension(auth_user): Extension<AuthUser>,
 ) -> impl IntoResponse {
     // Admin role check
-    if auth_user.role != "admin" {
+    if auth_user.role != "admin" || auth_user.auth_method != "session" {
         return (
             StatusCode::FORBIDDEN,
             Html("<h1>403 Forbidden</h1>"),
@@ -405,7 +405,7 @@ pub async fn post_user_edit(
     Form(req): Form<UpdatePasswordRequest>,
 ) -> impl IntoResponse {
     // Admin role check
-    if auth_user.role != "admin" {
+    if auth_user.role != "admin" || auth_user.auth_method != "session" {
         return (
             StatusCode::FORBIDDEN,
             Html("<h1>403 Forbidden</h1>"),
@@ -445,7 +445,7 @@ pub async fn post_user_delete(
     Extension(auth_user): Extension<AuthUser>,
 ) -> impl IntoResponse {
     // Admin role check
-    if auth_user.role != "admin" {
+    if auth_user.role != "admin" || auth_user.auth_method != "session" {
         return (
             StatusCode::FORBIDDEN,
             Html("<h1>403 Forbidden</h1>"),
@@ -477,7 +477,7 @@ pub async fn show_disable_mfa(
     Path(id): Path<i64>,
 ) -> Result<Html<String>, StatusCode> {
     // Admin role check
-    if auth_user.role != "admin" {
+    if auth_user.role != "admin" || auth_user.auth_method != "session" {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -591,7 +591,7 @@ pub async fn handle_disable_mfa(
     Form(form): Form<DisableMfaForm>,
 ) -> Result<Response, StatusCode> {
     // Admin role check
-    if auth_user.role != "admin" {
+    if auth_user.role != "admin" || auth_user.auth_method != "session" {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -724,4 +724,82 @@ pub async fn handle_disable_mfa(
     }
 
     Ok(Redirect::to("/admin/users").into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::AppState;
+
+    fn token_admin() -> AuthUser {
+        AuthUser {
+            id: 1,
+            username: "admin".to_string(),
+            role: "admin".to_string(),
+            auth_method: "token".to_string(),
+            token_name: Some("leaked-automation-token".to_string()),
+        }
+    }
+
+    fn session_admin() -> AuthUser {
+        AuthUser {
+            id: 1,
+            username: "admin".to_string(),
+            role: "admin".to_string(),
+            auth_method: "session".to_string(),
+            token_name: None,
+        }
+    }
+
+    /// Regression test for the confirmed privilege-escalation finding: a
+    /// leaked API token (auth_method="token") must never be able to create
+    /// a new admin account, even though its role is genuinely "admin".
+    #[tokio::test]
+    async fn test_post_user_new_rejects_token_authenticated_admin() {
+        let state = AppState::test().await.unwrap();
+        let req = CreateUserRequest {
+            username: "backdoor_admin".to_string(),
+            password: "password123".to_string(),
+            confirm_password: "password123".to_string(),
+            role: "admin".to_string(),
+        };
+
+        let response = post_user_new(State(state.clone()), Extension(token_admin()), Form(req))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(state.users.get_by_username("backdoor_admin").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_post_user_new_allows_session_authenticated_admin() {
+        let state = AppState::test().await.unwrap();
+        let req = CreateUserRequest {
+            username: "new_admin".to_string(),
+            password: "password123".to_string(),
+            confirm_password: "password123".to_string(),
+            role: "admin".to_string(),
+        };
+
+        let response = post_user_new(State(state.clone()), Extension(session_admin()), Form(req))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert!(state.users.get_by_username("new_admin").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_post_user_delete_rejects_token_authenticated_admin() {
+        let state = AppState::test().await.unwrap();
+        let victim = state.users.create("victim", "password123", "user").await.unwrap();
+
+        let response = post_user_delete(State(state.clone()), Path(victim.id), Extension(token_admin()))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(state.users.get_by_id(victim.id).await.unwrap().is_some());
+    }
 }
