@@ -22,6 +22,7 @@ tokio = { version = "1", features = ["full"] }
 argon2 = "0.5"
 rand = { version = "0.8", features = ["std"] }
 hex = "0.4"
+sha2 = "0.10"
 totp-rs = { version = "5", features = ["qr"] }
 aes-gcm = "0.10"
 base64 = "0.22"

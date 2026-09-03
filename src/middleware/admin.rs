@@ -13,6 +13,11 @@ pub struct AuthUser {
     pub id: i64,
     pub username: String,
     pub role: String,
+    /// How this request was authenticated: "session" or "token".
+    /// Mirrors the X-Auth-Method header forwarded upstream.
+    pub auth_method: String,
+    /// Set only when auth_method == "token"; the token's user-assigned name.
+    pub token_name: Option<String>,
 }
 
 /// Admin middleware: checks if user has admin role

@@ -6,6 +6,7 @@ pub mod admin;
 pub mod mfa;
 pub mod settings;
 pub mod me;
+pub mod api_tokens;
 
 // Re-export main handlers for convenience
 pub use login::{get_login, post_login};

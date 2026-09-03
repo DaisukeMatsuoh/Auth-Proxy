@@ -49,6 +49,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/me/password", get(handlers::me::redirect_to_password))
         .route("/me/mfa", get(handlers::me::redirect_to_mfa))
         .route("/me/devices", get(handlers::me::redirect_to_devices))
+        // API token management (Phase API-1). Session-auth only; enforced
+        // inside each handler via AuthUser::auth_method, not at the router
+        // level, since both session and token requests reach the same
+        // auth_middleware-protected routes.
+        .route("/api/tokens", get(handlers::api_tokens::list_tokens).post(handlers::api_tokens::create_token))
+        .route("/api/tokens/{id}", axum::routing::delete(handlers::api_tokens::revoke_token))
         // Fallback route: static files (if APP_SERVE_PATH set) then upstream proxy
         .fallback(handlers::proxy::proxy_handler)
         // Apply auth middleware to all routes except /login, /logout, /mfa/*, and some explicit routes

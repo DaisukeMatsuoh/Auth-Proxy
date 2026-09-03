@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::users_db::UserStoreDb;
 use crate::sessions_db::SessionStoreDb;
+use crate::api_tokens_db::ApiTokenStoreDb;
 use crate::users::UserStore;
 use crate::mfa::MfaStore;
 use sqlx::SqlitePool;
@@ -14,6 +15,7 @@ pub struct AppState {
     pub users: Arc<UserStoreDb>,
     pub sessions: Arc<SessionStoreDb>,
     pub mfa: Arc<MfaStore>,
+    pub api_tokens: Arc<ApiTokenStoreDb>,
     pub http_client: reqwest::Client,
 }
 
@@ -53,6 +55,7 @@ impl AppState {
         let users = Arc::new(UserStoreDb::new(db.clone()));
         let sessions = Arc::new(SessionStoreDb::new(db.clone(), config.session_ttl));
         let mfa = Arc::new(MfaStore::new(db.clone(), config.mfa_encryption_key));
+        let api_tokens = Arc::new(ApiTokenStoreDb::new(db.clone()));
 
         // Seed initial users from APP_USERS environment variable (if requested)
         if should_seed {
@@ -67,6 +70,7 @@ impl AppState {
             users,
             sessions,
             mfa,
+            api_tokens,
             http_client,
         })
     }
@@ -110,6 +114,7 @@ impl AppState {
         let users = Arc::new(UserStoreDb::new(db.clone()));
         let sessions = Arc::new(SessionStoreDb::new(db.clone(), config.session_ttl));
         let mfa = Arc::new(MfaStore::new(db.clone(), config.mfa_encryption_key));
+        let api_tokens = Arc::new(ApiTokenStoreDb::new(db.clone()));
 
         // Seed test users
         Self::seed_users(&db, &config.users_raw).await?;
@@ -120,6 +125,7 @@ impl AppState {
             users,
             sessions,
             mfa,
+            api_tokens,
             http_client: reqwest::Client::new(),
         })
     }

@@ -42,6 +42,7 @@ src/
 ├── users.rs             UserStore: create/get/verify/update. Argon2id hashing.
 ├── session.rs           SessionStore: create/get/delete/cleanup
 ├── guest_token.rs       GuestTokenStore: issue/verify/revoke/cleanup
+├── api_tokens_db.rs     ApiTokenStoreDb: issue/verify/revoke Bearer API tokens (SHA-256 hashed, Phase API-1)
 ├── mfa.rs               MfaStore: TOTP (AES-256-GCM encrypted), backup codes, device tokens
 ├── middleware/
 │   ├── auth.rs          auth_middleware: session/guest resolution → AuthContext extension
@@ -54,6 +55,7 @@ src/
     ├── admin/           /admin/* — user management UI
     ├── guest_token.rs   POST /api/guest-token (API key auth)
     ├── guest_auth.rs    GET/POST /guest-auth (password-protected guest links)
+    ├── api_tokens.rs    GET/POST /api/tokens, DELETE /api/tokens/{id} (session auth only, Phase API-1)
     ├── mfa.rs           GET/POST /mfa/verify, /mfa/backup
     └── settings.rs      /settings/security — password change, MFA setup/disable
 migrations/
@@ -96,6 +98,8 @@ Guest token failures always return **403**, never redirect to `/login`.
 | `X-Auth-Role` | `admin` or `user` | Authenticated only |
 | `X-Auth-Guest` | `true` | Guest only |
 | `X-Auth-Issuer` | `AUTH_PROXY_ISSUER_NAME` | Always |
+| `X-Auth-Method` | `session` or `token` | Authenticated only (Phase API-1) |
+| `X-Auth-Token-Name` | API token's user-assigned name (sanitized) | Token auth only (Phase API-1) |
 
 ---
 
@@ -109,6 +113,7 @@ Guest token failures always return **403**, never redirect to `/login`.
 | Phase 3a-2 | Admin-forced MFA disable, `/settings/security`, self-service password change, MFA status in admin user list |
 | Phase 4 | Guest tokens: time-limited, use-count-limited, password-protected, UI metadata |
 | Phase Docker | Dockerfile (scratch base, musl static binary), docker-compose.example.yml, .env.auth-proxy.example |
+| Phase API-1 | Bearer API token authentication for non-browser clients (`api_tokens` table, `X-Auth-Method`/`X-Auth-Token-Name` headers, RFC 6750-style 401 JSON errors, opt-in via `AUTH_PROXY_API_TOKEN_ENABLED`). See `docs/note/api-token-auth-runbook.md` and `docs/note/decisions/0001-api-token-bearer-auth.md`. Token issuance/revocation UI (`/me/tokens`, Phase API-2) is not yet implemented — see runbook §7 |
 
 ---
 
@@ -145,6 +150,12 @@ The key is `AUTH_PROXY_MFA_ENCRYPTION_KEY`. Never store plaintext secrets.
 **`/api/guest-token` and `/guest-auth` are outside `auth_middleware`.**  
 In Axum 0.8, `layer()` applies to the fallback but not to explicitly defined routes. These routes rely on this behavior. Do not restructure the router in a way that applies `auth_middleware` to them.
 
+**Bearer token auth takes priority over session cookies, and its failures never redirect (Phase API-1).**  
+In `auth_middleware`, the `Authorization: Bearer` check runs before the session cookie check. Once a Bearer header is present, the request is treated as an API client: on any failure, return the RFC 6750-style 401 JSON (with `WWW-Authenticate: Bearer`), never a 302 to `/login`. Token auth never sets `Set-Cookie`.
+
+**`POST /api/tokens` and `DELETE /api/tokens/{id}` require session authentication, not token authentication.**  
+Check `AuthUser.auth_method == "session"` inside the handler. Allowing a valid API token to mint or revoke other tokens would let a single leaked token escalate into unlimited further tokens.
+
 ---
 
 ## Environment Variables
@@ -160,6 +171,8 @@ In Axum 0.8, `layer()` applies to the fallback but not to explicitly defined rou
 | `AUTH_PROXY_MFA_ENCRYPTION_KEY` | Yes | — | 32-byte hex; encrypts TOTP secrets |
 | `AUTH_PROXY_GUEST_TOKEN_SECRET` | Yes | — | 32-byte hex; HMAC key for guest tokens |
 | `AUTH_PROXY_GUEST_TOKEN_API_KEY` | Yes | — | Bearer token for POST /api/guest-token |
+| `AUTH_PROXY_API_TOKEN_ENABLED` | No | `false` | Enables Bearer API token auth (Phase API-1). Opt-in for backward compat |
+| `AUTH_PROXY_API_TOKEN_DEFAULT_TTL_DAYS` | No | `0` | Default expiry (days) for newly issued API tokens. `0` = no expiry |
 | `RUST_LOG` | No | `info` | Tracing filter |
 
 ---
