@@ -27,3 +27,6 @@ internal/
 *.DS_Store
 docker-compose.yml
 progress.md
+
+# direnv (machine/account-local env vars, e.g. CLAUDE_CONFIG_DIR)
+.envrc
