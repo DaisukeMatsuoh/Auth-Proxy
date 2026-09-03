@@ -9,7 +9,7 @@ This file provides context for Claude (and other AI agents) working on this repo
 **auth-proxy** is a single-binary Rust authentication reverse proxy. It sits between a reverse proxy (Traefik, nginx) and upstream services, handling all authentication so that upstream services never need to implement auth themselves.
 
 - Upstream services receive authenticated user identity via `X-Auth-*` headers
-- Guest token feature enables time-limited, optionally password-protected shared links
+- Guest token feature is **designed in the spec but not yet implemented** (see "Guest Tokens — Not Yet Implemented" below). It is intended to enable time-limited, optionally password-protected shared links
 - SQLite is embedded — no external database dependency
 - Targets low-resource hardware; memory footprint is a first-class concern
 
@@ -36,34 +36,35 @@ Both vars unset → startup error. This is intentional and enforced in `src/conf
 src/
 ├── main.rs              CLI entry point (clap derive). Subcommands: serve, init-admin, list, passwd
 ├── config.rs            Config struct + from_env(). All env var parsing lives here.
-├── db.rs                SQLite pool init + sqlx::migrate!("./migrations")
-├── state.rs             AppState (Arc-wrapped stores, passed to all handlers)
+├── state.rs             AppState (Arc-wrapped stores, passed to all handlers). DB init + sqlx::migrate!("./migrations") happens here — there is no separate db.rs.
 ├── router.rs            Axum router. Route → handler mapping. Middleware layering.
-├── users.rs             UserStore: create/get/verify/update. Argon2id hashing.
-├── session.rs           SessionStore: create/get/delete/cleanup
-├── guest_token.rs       GuestTokenStore: issue/verify/revoke/cleanup
+├── users.rs             UserStore: parses the APP_USERS/AUTH_PROXY_USERS seed format only. Not the live user store — see users_db.rs.
+├── users_db.rs          UserStoreDb: the live, SQLite-backed user store. create/get/verify/update. Argon2id hashing.
+├── session.rs           SessionStore: in-memory implementation, currently unreferenced by AppState or any handler (dead code, kept for its own unit tests). The live session store is sessions_db.rs.
+├── sessions_db.rs       SessionStoreDb: the live, SQLite-backed session store. create/get/delete/cleanup.
 ├── api_tokens_db.rs     ApiTokenStoreDb: issue/verify/revoke Bearer API tokens (SHA-256 hashed, Phase API-1)
 ├── mfa.rs               MfaStore: TOTP (AES-256-GCM encrypted), backup codes, device tokens
 ├── middleware/
-│   ├── auth.rs          auth_middleware: session/guest resolution → AuthContext extension
-│   └── admin.rs         admin_middleware: role == Admin check
+│   ├── auth.rs          auth_middleware: Bearer-token resolution, then session-cookie resolution, → Extension<AuthUser>. There is no guest-token resolution — see "Guest Tokens — Not Yet Implemented" below.
+│   └── admin.rs         Defines the AuthUser struct. Also defines an admin_middleware fn, but it has zero callers (dead code) — admin role checks are done per-handler in handlers/admin/*.rs instead.
 └── handlers/
     ├── login.rs         GET/POST /login
     ├── logout.rs        GET /logout
-    ├── proxy.rs         Fallback handler: verifies AuthContext, adds X-Auth-* headers, proxies
+    ├── proxy.rs         Fallback handler: requires Extension<AuthUser>, adds X-Auth-* headers, proxies
     ├── static_files.rs  Static file serving (AUTH_PROXY_SERVE_PATH mode)
-    ├── admin/           /admin/* — user management UI
-    ├── guest_token.rs   POST /api/guest-token (API key auth)
-    ├── guest_auth.rs    GET/POST /guest-auth (password-protected guest links)
+    ├── admin/           /admin/* — user management UI (session auth only, see Key Invariants)
     ├── api_tokens.rs    GET/POST /api/tokens, DELETE /api/tokens/{id} (session auth only, Phase API-1)
     ├── mfa.rs           GET/POST /mfa/verify, /mfa/backup
-    └── settings.rs      /settings/security — password change, MFA setup/disable
+    ├── me.rs            GET /me, /me/password, /me/mfa, /me/devices — stable redirect URLs (Phase Me)
+    └── settings/        /settings/security — password change, MFA setup/disable
 migrations/
-    001_init.sql
-    002_guest_tokens.sql
+    001_initial.sql
     003_mfa.sql
-    ...
+    004_mfa_add_attempt_count.sql
+    005_api_tokens.sql
 ```
+
+There is no `guest_token.rs` store, no `guest_token.rs`/`guest_auth.rs` handlers, and migration `002` does not exist (a genuine gap in the numbering — the next new migration is `006_*.sql`). See "Guest Tokens — Not Yet Implemented" below.
 
 ---
 
@@ -73,19 +74,20 @@ migrations/
 Incoming request
   └─ auth_middleware
        ├─ Strip all X-Auth-* headers from client (forgery prevention)
-       ├─ Check guest_session_id cookie  → AuthContext::Guest
-       ├─ Check session_id cookie        → AuthContext::Authenticated
-       ├─ Check ?guest_token= query param
-       │    ├─ password_hash present → redirect /guest-auth
-       │    └─ none → verify_and_increment → AuthContext::Guest
-       └─ No auth → redirect /login
+       ├─ AUTH_PROXY_API_TOKEN_ENABLED && Authorization: Bearer present?
+       │    ├─ valid token   → Extension<AuthUser> (auth_method="token"), continue
+       │    └─ invalid token → 401 JSON (RFC 6750), never redirect (Phase API-1)
+       ├─ Check session_id cookie → Extension<AuthUser> (auth_method="session")
+       └─ No auth → handler decides (proxy/static_files redirect to /login;
+                     /settings/*, /admin/*, /api/tokens require Extension<AuthUser>
+                     via extractor and fail closed if absent)
             │
             ▼
-       handler (proxy / static_files)
-            └─ Inject X-Auth-* headers based on AuthContext
+       handler (proxy / static_files / admin / api_tokens / ...)
+            └─ Inject X-Auth-* headers based on AuthUser
 ```
 
-Guest token failures always return **403**, never redirect to `/login`.
+There is currently no guest-token resolution step in this flow — see "Guest Tokens — Not Yet Implemented" below.
 
 ---
 
@@ -96,7 +98,7 @@ Guest token failures always return **403**, never redirect to `/login`.
 | `X-Auth-User` | username | Authenticated only |
 | `X-Auth-User-Id` | users.id (integer string) | Authenticated only |
 | `X-Auth-Role` | `admin` or `user` | Authenticated only |
-| `X-Auth-Guest` | `true` | Guest only |
+| `X-Auth-Guest` | `true` | **Not yet implemented** — planned for the guest-token feature, never actually sent today |
 | `X-Auth-Issuer` | `AUTH_PROXY_ISSUER_NAME` | Always |
 | `X-Auth-Method` | `session` or `token` | Authenticated only (Phase API-1) |
 | `X-Auth-Token-Name` | API token's user-assigned name (sanitized) | Token auth only (Phase API-1) |
@@ -111,9 +113,38 @@ Guest token failures always return **403**, never redirect to `/login`.
 | Phase 2 | Web admin UI for user management |
 | Phase 3a | TOTP MFA, backup codes, device remembering, brute-force delay |
 | Phase 3a-2 | Admin-forced MFA disable, `/settings/security`, self-service password change, MFA status in admin user list |
-| Phase 4 | Guest tokens: time-limited, use-count-limited, password-protected, UI metadata |
 | Phase Docker | Dockerfile (scratch base, musl static binary), docker-compose.example.yml, .env.auth-proxy.example |
+| Phase Me | Stable `/me`, `/me/password`, `/me/mfa`, `/me/devices` redirect URLs for upstream app integration |
 | Phase API-1 | Bearer API token authentication for non-browser clients (`api_tokens` table, `X-Auth-Method`/`X-Auth-Token-Name` headers, RFC 6750-style 401 JSON errors, opt-in via `AUTH_PROXY_API_TOKEN_ENABLED`). See `docs/note/api-token-auth-runbook.md` and `docs/note/decisions/0001-api-token-bearer-auth.md`. Token issuance/revocation UI (`/me/tokens`, Phase API-2) is not yet implemented — see runbook §7 |
+
+**Phase 4 ("Guest tokens") is NOT implemented**, despite being listed as done in older versions of this file. See "Guest Tokens — Not Yet Implemented" below.
+
+---
+
+## Guest Tokens — Not Yet Implemented
+
+The spec describes a guest-token feature (time-limited, optionally password-protected shared links,
+an `AuthContext::Guest` variant, a `guest_tokens` table, `POST /api/guest-token`, `GET/POST /guest-auth`).
+**None of this exists in the codebase today.** Concretely, there is no `guest_token.rs` store, no
+`guest_token.rs`/`guest_auth.rs` handlers, no `AuthContext` enum (auth state is a plain `AuthUser` struct
+instead), no `guest_tokens` table/migration, and no `/api/guest-token` or `/guest-auth` routes.
+
+What *does* exist as a placeholder: `Config` has `guest_token_secret` / `guest_token_api_key` fields
+(parsed from `AUTH_PROXY_GUEST_TOKEN_SECRET` / `AUTH_PROXY_GUEST_TOKEN_API_KEY`), but nothing reads them.
+
+If/when this feature is implemented, carry over these design points from the spec:
+- `use_count` enforcement must be atomic SQL (`UPDATE ... WHERE use_count < max_uses RETURNING id`),
+  not a separate SELECT+Rust comparison.
+- Guest token errors (invalid, expired, wrong password) must always return 403, never redirect to `/login`,
+  and must not distinguish "doesn't exist" from "wrong password" in the response.
+- A guest auth password failure should have the same ~500ms delay pattern used elsewhere in this codebase
+  for failed-credential timing consistency.
+- `/api/guest-token` and `/guest-auth` will need to sit outside `auth_middleware` (in Axum 0.8, `layer()`
+  applies to the fallback but not to explicitly defined routes — plan the router structure around this).
+
+This section replaces several invariants that appeared in earlier versions of this file as if they were
+already enforced in code; they were not (see ADR `docs/note/decisions/0001-api-token-bearer-auth.md` for
+how this drift was found and tracked).
 
 ---
 
@@ -123,12 +154,12 @@ Guest token failures always return **403**, never redirect to `/login`.
 Never edit an existing file under `migrations/`. New schema changes always go in a new numbered file (e.g., `004_*.sql`). Always `ls migrations/` before creating a new one to find the correct next number.
 
 **auth_middleware is the sole authentication gate.**  
-No handler should perform its own session/token validation. All auth state arrives via `Extension<AuthContext>`.
+No handler should perform its own session/token validation. All auth state arrives via `Extension<AuthUser>`.
 
 **X-Auth-* headers must be stripped before any upstream contact.**  
 This is the forgery prevention boundary. Do not remove this logic or move it downstream.
 
-**Use `OsRng`, never `thread_rng`**, for session IDs, guest token IDs, TOTP secrets, device tokens.
+**Use `OsRng`, never `thread_rng`**, for session IDs, API token generation, TOTP secrets, device tokens.
 
 **Argon2id operations must run inside `tokio::task::spawn_blocking`.**  
 Direct async calls will block the executor.
@@ -136,19 +167,9 @@ Direct async calls will block the executor.
 **Timing attack mitigations must not be removed:**
 - Login failure: 500ms delay before returning error
 - Backup code verification: iterate all codes, no early return on match
-- Guest auth password failure: 500ms delay before re-rendering form
-- Invalid guest token vs wrong token: always return 403 (no distinguishing response)
-
-**`use_count` enforcement must be atomic.**  
-Use `UPDATE ... WHERE use_count < max_uses RETURNING id`. A separate SELECT+Rust comparison is a race condition.
-
-**Guest token errors always return 403, never redirect to `/login`.**
 
 **TOTP secrets are stored AES-256-GCM encrypted.**  
 The key is `AUTH_PROXY_MFA_ENCRYPTION_KEY`. Never store plaintext secrets.
-
-**`/api/guest-token` and `/guest-auth` are outside `auth_middleware`.**  
-In Axum 0.8, `layer()` applies to the fallback but not to explicitly defined routes. These routes rely on this behavior. Do not restructure the router in a way that applies `auth_middleware` to them.
 
 **Bearer token auth takes priority over session cookies, and its failures never redirect (Phase API-1).**  
 In `auth_middleware`, the `Authorization: Bearer` check runs before the session cookie check. Once a Bearer header is present, the request is treated as an API client: on any failure, return the RFC 6750-style 401 JSON (with `WWW-Authenticate: Bearer`), never a 302 to `/login`. Token auth never sets `Set-Cookie`.
@@ -221,8 +242,6 @@ async fn test_state() -> AppState {
 - [ ] `X-Auth-*` header stripping is intact in `auth_middleware`
 - [ ] `OsRng` used for all random generation (not `thread_rng`)
 - [ ] Argon2 calls are inside `spawn_blocking`
-- [ ] Guest token errors return 403, not redirect
-- [ ] `use_count` increment is atomic SQL (not Rust-side compare)
 - [ ] New env vars are documented in both `config.rs` comments and this file
 - [ ] New migration file has correct numeric prefix (check `ls migrations/`)
 
