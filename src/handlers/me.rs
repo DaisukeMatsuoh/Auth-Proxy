@@ -155,6 +155,28 @@ pub async fn redirect_to_mfa(
     }
 }
 
+/// GET /me/tokens - Redirect to API token management page
+pub async fn redirect_to_tokens(
+    auth_user: Option<Extension<AuthUser>>,
+    Query(params): Query<MeQuery>,
+) -> Response {
+    match auth_user {
+        Some(_) => {
+            let target = build_redirect_target("/settings/security/tokens", params.return_to.as_deref());
+            Redirect::to(&target).into_response()
+        }
+        None => {
+            let next = if let Some(rt) = params.return_to {
+                let me_url = format!("/me/tokens?return_to={}", urlencoding::encode(&rt));
+                urlencoding::encode(&me_url).to_string()
+            } else {
+                urlencoding::encode("/me/tokens").to_string()
+            };
+            Redirect::to(&format!("/login?next={}", next)).into_response()
+        }
+    }
+}
+
 /// GET /me/devices - Redirect to device management page
 pub async fn redirect_to_devices(
     auth_user: Option<Extension<AuthUser>>,

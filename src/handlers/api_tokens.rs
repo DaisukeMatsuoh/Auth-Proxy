@@ -12,7 +12,7 @@ use crate::middleware::AuthUser;
 /// must stay behind session auth only: allowing a token to mint or revoke
 /// other tokens would create a privilege-escalation chain from a single
 /// leaked token.
-fn require_session_auth(auth_user: &AuthUser) -> Result<(), Response> {
+pub(crate) fn require_session_auth(auth_user: &AuthUser) -> Result<(), Response> {
     if auth_user.auth_method != "session" {
         return Err((
             StatusCode::FORBIDDEN,
