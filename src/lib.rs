@@ -4,6 +4,7 @@ pub mod session;
 pub mod users;
 pub mod users_db;
 pub mod sessions_db;
+pub mod api_tokens_db;
 pub mod mfa;
 pub mod handlers;
 pub mod middleware;

@@ -19,6 +19,9 @@ pub struct Config {
     // Phase 4: ゲストトークン
     pub guest_token_secret: String,
     pub guest_token_api_key: String,
+    // Phase API-1: APIトークン認証
+    pub api_token_enabled: bool,
+    pub api_token_default_ttl_days: u32,
 }
 
 #[derive(Debug, Error)]
@@ -153,6 +156,16 @@ impl Config {
             return Err(ConfigError::NeitherModeConfigured);
         }
 
+        // Phase API-1: API token authentication (opt-in, default disabled for backward compat)
+        let api_token_enabled = std::env::var("AUTH_PROXY_API_TOKEN_ENABLED")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false);
+
+        let api_token_default_ttl_days: u32 = std::env::var("AUTH_PROXY_API_TOKEN_DEFAULT_TTL_DAYS")
+            .unwrap_or_else(|_| "0".to_string())
+            .parse()
+            .unwrap_or(0);
+
         Ok(Config {
             users_raw,
             session_secret,
@@ -165,6 +178,8 @@ impl Config {
             mfa_encryption_key,
             guest_token_secret,
             guest_token_api_key,
+            api_token_enabled,
+            api_token_default_ttl_days,
         })
     }
 
@@ -185,6 +200,8 @@ impl Config {
                 .to_string(),
             guest_token_api_key: "test_guest_api_key_0123456789abcdef0123456789abcdef"
                 .to_string(),
+            api_token_enabled: true,
+            api_token_default_ttl_days: 0,
         }
     }
 }

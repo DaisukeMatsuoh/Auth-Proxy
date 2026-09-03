@@ -39,6 +39,8 @@ Set at least one of `AUTH_PROXY_SERVE_PATH` or `AUTH_PROXY_UPSTREAM_APP_URL`. **
 - [CLI Reference](#cli-reference)
 - [User Security Settings](#user-security-settings)
 - [Headers Forwarded to Upstream](#headers-forwarded-to-upstream)
+  - [Implementation Examples](#implementation-examples)
+  - [Integration with Upstream Applications (Phase Me)](#integration-with-upstream-applications-phase-me)
 - [Guest Token Feature](#guest-token-feature)
 - [Operations](#operations)
 - [Troubleshooting](#troubleshooting)
@@ -56,6 +58,7 @@ Set at least one of `AUTH_PROXY_SERVE_PATH` or `AUTH_PROXY_UPSTREAM_APP_URL`. **
 | Phase 3a-2 | Admin-forced MFA disable · user security settings · password change | ✅ Done |
 | Phase 4 | Guest tokens (use-count limits · password-protected share links) | ✅ Done |
 | Phase Docker | Dockerfile · Compose example · mode validation | ✅ Done |
+| Phase Me | Stable public URLs (`/me`) for account settings integration | ✅ Done |
 | Phase 3b | Passkeys (WebAuthn) | 🔜 Planned |
 
 ---
@@ -339,7 +342,7 @@ Edit `docker-compose.yml` and replace the `app` service with your own. **Do not 
 services:
   auth-proxy:
     # Uncomment exactly one of the following:
-    image: ghcr.io/your-org/auth-proxy:latest    # [Recommended] use the published image
+    image: ghcr.io/DaisukeMatsuoh/auth-proxy:latest    # [Recommended] use the published image
     # build: .                                     # [Development] build locally
     ports:
       # ${AUTH_PROXY_HOST_PORT}: host-side port (from .env)
@@ -726,14 +729,35 @@ Because usernames can change, use `X-Auth-User-Id` as the stable identifier when
 
 ### Implementation Examples
 
-```python
-# Python (Flask)
-@app.route("/")
-def index():
-    user_id  = request.headers.get("X-Auth-User-Id")   # "42"
-    username = request.headers.get("X-Auth-User")       # "alice"
-    role     = request.headers.get("X-Auth-Role")       # "user" | "admin"
-    # No auth logic needed — just read the headers
+```javascript
+// Node.js (Express)
+app.get('/', (req, res) => {
+  const userId  = req.get('X-Auth-User-Id');   // "42"
+  const username = req.get('X-Auth-User');      // "alice"
+  const role     = req.get('X-Auth-Role');      // "user" | "admin"
+  const isGuest = req.get('X-Auth-Guest') === 'true';
+  
+  const settingsUrl = `/me?return_to=${encodeURIComponent(req.path)}`;
+  res.render('index', { username, role, isGuest, settingsUrl });
+});
+```
+
+```rust
+// Rust (Axum)
+async fn handler(headers: HeaderMap) -> impl IntoResponse {
+    let user_id = headers.get("X-Auth-User-Id")
+        .and_then(|v| v.to_str().ok());
+    let username = headers.get("X-Auth-User")
+        .and_then(|v| v.to_str().ok());
+    let role = headers.get("X-Auth-Role")
+        .and_then(|v| v.to_str().ok());
+    let is_guest = headers.get("X-Auth-Guest")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    
+    // No auth logic needed — just read the headers
+}
 ```
 
 ```go
@@ -742,7 +766,100 @@ func handler(w http.ResponseWriter, r *http.Request) {
     userID   := r.Header.Get("X-Auth-User-Id")   // "42"
     username := r.Header.Get("X-Auth-User")       // "alice"
     role     := r.Header.Get("X-Auth-Role")       // "user" | "admin"
+    isGuest := r.Header.Get("X-Auth-Guest") == "true"
 }
+```
+
+---
+
+### Integration with Upstream Applications (Phase Me)
+
+auth-proxy provides a **stable public API** for account settings URLs, allowing upstream applications to link to user account management without depending on internal implementation details.
+
+#### Stable URLs (`/me`)
+
+| URL | Redirects to | Purpose |
+|---|---|---|
+| `GET /me` | `/settings/security` | Account settings homepage |
+| `GET /me/password` | `/settings/security/password` | Password change page |
+| `GET /me/mfa` | `/settings/security` | MFA management |
+| `GET /me/devices` | `/settings/security` | Device remembering management |
+
+All `/me` URLs are **stable** and will not change. The redirect targets are implementation details and may change without notice.
+
+#### Using `/me` in Upstream Applications
+
+The `/me` URLs can be used in templates to provide links to user account settings:
+
+```javascript
+// Node.js (Express) — add links to template
+app.get('/dashboard', (req, res) => {
+  const username = req.get('X-Auth-User');
+  const isGuest = req.get('X-Auth-Guest') === 'true';
+  
+  if (isGuest) {
+    return res.render('guest-view', { /* guest content */ });
+  }
+  
+  const settingsUrl = `/me?return_to=${encodeURIComponent(req.path)}`;
+  res.render('dashboard', {
+    username,
+    settingsUrl,
+    passwordUrl: `/me/password?return_to=${encodeURIComponent(req.path)}`
+  });
+});
+```
+
+In the template, render navigation links:
+
+```html
+<nav>
+  <span>Welcome, {{ username }}!</span>
+  <a href="{{ settingsUrl }}">Account Settings</a>
+  <a href="/logout">Log Out</a>
+</nav>
+```
+
+```rust
+// Rust (Axum) — build settings URL
+use std::fmt::Write;
+
+let username = headers.get("X-Auth-User").and_then(|v| v.to_str().ok());
+let current_path = uri.path();
+let settings_url = format!(
+    "/me?return_to={}",
+    urlencoding::encode(current_path)
+);
+```
+
+```go
+// Go — URL construction
+import "net/url"
+
+username := r.Header.Get("X-Auth-User")
+settingsURL := fmt.Sprintf(
+    "/me?return_to=%s",
+    url.QueryEscape(r.RequestURI),
+)
+```
+
+#### `return_to` Parameter
+
+Pass the `return_to` query parameter to return users to their original page after completing actions:
+
+```
+GET /me?return_to=/dashboard
+  → User makes account setting changes
+  → On completion, user is redirected to /dashboard
+```
+
+**Important**: Always URL-encode the `return_to` value when constructing URLs in your application.
+
+```javascript
+// Correct URL encoding
+const currentPath = '/dashboard?filter=active';
+const settingsUrl = `/me/password?return_to=${encodeURIComponent(currentPath)}`;
+// → /me/password?return_to=%2Fdashboard%3Ffilter%3Dactive
 ```
 
 ---

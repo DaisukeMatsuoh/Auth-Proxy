@@ -344,7 +344,7 @@ cp docker-compose.example.yml docker-compose.yml
 services:
   auth-proxy:
     # ↓ いずれか一つを選択してコメントアウトを解除してください
-    image: ghcr.io/your-org/auth-proxy:latest    # 【推奨】公開イメージを使う場合
+    image: ghcr.io/DaisukeMatsuoh/auth-proxy:latest    # 【推奨】公開イメージを使う場合
     # build: .                                     # 【開発】ローカルでビルドする場合
     ports:
       # ホスト側のポート${AUTH_PROXY_HOST_PORT}と

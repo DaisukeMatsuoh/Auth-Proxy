@@ -13,6 +13,11 @@ pub struct AuthUser {
     pub id: i64,
     pub username: String,
     pub role: String,
+    /// How this request was authenticated: "session" or "token".
+    /// Mirrors the X-Auth-Method header forwarded upstream.
+    pub auth_method: String,
+    /// Set only when auth_method == "token"; the token's user-assigned name.
+    pub token_name: Option<String>,
 }
 
 /// Admin middleware: checks if user has admin role
@@ -21,8 +26,8 @@ pub async fn admin_middleware(
     Extension(auth_user): Extension<AuthUser>,
     next: Next,
 ) -> Response {
-    // Check if user is admin
-    if auth_user.role != "admin" {
+    // Check if user is admin (session auth only; API tokens must never reach /admin/*)
+    if auth_user.role != "admin" || auth_user.auth_method != "session" {
         return (
             StatusCode::FORBIDDEN,
             "<!DOCTYPE html>
