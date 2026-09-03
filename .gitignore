@@ -30,3 +30,7 @@ progress.md
 
 # direnv (machine/account-local env vars, e.g. CLAUDE_CONFIG_DIR)
 .envrc
+
+
+# ビルド時テスト時のユーザーなどのパスワード管理ファイル(local用)
+**/testPassword.txt

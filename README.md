@@ -342,7 +342,7 @@ Edit `docker-compose.yml` and replace the `app` service with your own. **Do not 
 services:
   auth-proxy:
     # Uncomment exactly one of the following:
-    image: ghcr.io/your-org/auth-proxy:latest    # [Recommended] use the published image
+    image: ghcr.io/DaisukeMatsuoh/auth-proxy:latest    # [Recommended] use the published image
     # build: .                                     # [Development] build locally
     ports:
       # ${AUTH_PROXY_HOST_PORT}: host-side port (from .env)
