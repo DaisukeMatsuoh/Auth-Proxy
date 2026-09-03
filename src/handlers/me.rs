@@ -93,17 +93,29 @@ pub async fn redirect_to_security(
 ) -> Response {
     match auth_user {
         Some(_) => {
-            // User is authenticated, redirect to settings
-let next = if let Some(rt) = params.return_to {
-    let me_url = format!("/me?return_to={}", urlencoding::encode(&rt));
-    format!("/login?next={}", urlencoding::encode(&me_url))
-} else {
-    "/login?next=%2Fme".to_string()  // or: format!("/login?next={}", urlencoding::encode("/me"))
-};
-Redirect::to(&next).into_response()
-                "/settings/security/password",
-                params.return_to.as_deref(),
-            );
+            let target = build_redirect_target("/settings/security", params.return_to.as_deref());
+            Redirect::to(&target).into_response()
+        }
+        None => {
+            let next = if let Some(rt) = params.return_to {
+                let me_url = format!("/me?return_to={}", urlencoding::encode(&rt));
+                urlencoding::encode(&me_url).to_string()
+            } else {
+                urlencoding::encode("/me").to_string()
+            };
+            Redirect::to(&format!("/login?next={}", next)).into_response()
+        }
+    }
+}
+
+/// GET /me/password - Redirect to password change page
+pub async fn redirect_to_password(
+    auth_user: Option<Extension<AuthUser>>,
+    Query(params): Query<MeQuery>,
+) -> Response {
+    match auth_user {
+        Some(_) => {
+            let target = build_redirect_target("/settings/security/password", params.return_to.as_deref());
             Redirect::to(&target).into_response()
         }
         None => {
