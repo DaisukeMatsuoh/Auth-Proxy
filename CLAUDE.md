@@ -182,6 +182,9 @@ Check `AuthUser.auth_method == "session"` inside the handler. Allowing a valid A
 **A path-scoped API token (`path_prefix` set) must be checked before the user is even looked up (Phase API-3, R7).**  
 In `auth_middleware`, the scope check happens right after `ApiTokenStoreDb::verify` succeeds and before `state.users.get_by_id`. On mismatch, return `403 insufficient_scope` — never silently widen access, and never fall through to full access. `path_prefix == None` means unrestricted (Phase API-1 behavior), unchanged.
 
+**Never compare `path_prefix` against a raw, un-normalized request path with plain `starts_with`.**  
+`req.uri().path()` never collapses `..` or decodes percent-encoding, but `reqwest`'s `Url::parse` (used when forwarding to the upstream in `handlers/proxy.rs`) does — including percent-encoded `%2e%2e` in any case combination. A prefix match on the raw path alone lets a request like `/sync/%2e%2e/admin` pass a `/sync/` scope check while actually resolving to `/admin` upstream. `contains_dot_dot_segment` in `middleware/auth.rs` must run (and reject on any match) before the prefix comparison. Found and fixed via security review — see ADR 0002's addendum.
+
 **`/admin/*` requires session authentication, not just `role == "admin"`.**  
 Every handler in `src/handlers/admin/` checks `auth_user.role != "admin" || auth_user.auth_method != "session"`. API tokens carry the owner's real `role`, so without the `auth_method` check, a leaked API token belonging to an admin would grant full admin-panel access (create admins, reset any password, delete users) even though the token was only ever meant to authenticate calls to the proxied upstream app. This was found and fixed via security review — see `docs/note/decisions/0001-api-token-bearer-auth.md`.
 

@@ -60,6 +60,29 @@ fn insufficient_scope_response() -> Response {
         .into_response()
 }
 
+/// True if any `/`-separated segment of `path`, once percent-decoded, is
+/// exactly `..`.
+///
+/// `req.uri().path()` is never normalized: `http::Uri` does not collapse
+/// dot-segments or decode percent-encoding. But when a scoped request is
+/// later forwarded to the upstream in `proxy::forward_to_upstream`, the
+/// outgoing URL goes through `reqwest`'s `Url::parse`, which DOES collapse
+/// dot-segments -- including percent-encoded ones like `%2e%2e` in any
+/// case combination. Without this check, a token scoped to
+/// `path_prefix = "/sync/"` could pass `starts_with("/sync/")` with a path
+/// like `/sync/%2e%2e/admin` here, yet the same request would resolve to
+/// `/admin` on the upstream once its URL is parsed -- a full scope bypass.
+/// This check must run before the prefix comparison and reject on any
+/// match, since the string being approved here is not the string that
+/// downstream URL parsing will ultimately act on.
+fn contains_dot_dot_segment(path: &str) -> bool {
+    path.split('/').any(|segment| {
+        urlencoding::decode(segment)
+            .map(|decoded| decoded == "..")
+            .unwrap_or(false)
+    })
+}
+
 /// Extract session ID from cookies and attach X-Auth-* headers
 pub async fn auth_middleware(
     State(state): State<AppState>,
@@ -88,8 +111,15 @@ pub async fn auth_middleware(
                     // Path-scope restriction (Phase API-3, R7). Checked before
                     // fetching the user so a scoped-out request costs one
                     // fewer DB round trip.
+                    //
+                    // The dot-segment check must run first: a raw prefix
+                    // match on an un-normalized path can be fooled by
+                    // `..` (or `%2e%2e`) segments that a downstream URL
+                    // parser (reqwest, when forwarding to the upstream)
+                    // will collapse into a different, out-of-scope path.
                     if let Some(prefix) = &token_row.path_prefix {
-                        if !req.uri().path().starts_with(prefix.as_str()) {
+                        let path = req.uri().path();
+                        if contains_dot_dot_segment(path) || !path.starts_with(prefix.as_str()) {
                             return insufficient_scope_response();
                         }
                     }
@@ -360,6 +390,82 @@ mod tests {
             .add_header("authorization", format!("Bearer {plaintext}"))
             .await;
         response.assert_status_ok();
+    }
+
+    #[test]
+    fn test_contains_dot_dot_segment_detects_literal_and_encoded_forms() {
+        assert!(contains_dot_dot_segment("/sync/../admin"));
+        assert!(contains_dot_dot_segment("/sync/%2e%2e/admin"));
+        assert!(contains_dot_dot_segment("/sync/%2E%2e/admin"));
+        assert!(contains_dot_dot_segment("/sync/%2e%2E/admin"));
+        assert!(contains_dot_dot_segment("/sync/%2E%2E/admin"));
+        // Mixed literal + encoded dot within the same segment.
+        assert!(contains_dot_dot_segment("/sync/.%2e/admin"));
+        assert!(contains_dot_dot_segment("/sync/%2e./admin"));
+        // A leading ".." segment (no prefix before it).
+        assert!(contains_dot_dot_segment("../etc/passwd"));
+    }
+
+    #[test]
+    fn test_contains_dot_dot_segment_allows_normal_paths() {
+        assert!(!contains_dot_dot_segment("/sync/logs"));
+        assert!(!contains_dot_dot_segment("/sync/"));
+        assert!(!contains_dot_dot_segment("/"));
+        // A single dot segment is not a traversal.
+        assert!(!contains_dot_dot_segment("/sync/./logs"));
+        // A segment that merely contains dots but isn't exactly ".." must
+        // not be flagged (avoid over-blocking legitimate filenames).
+        assert!(!contains_dot_dot_segment("/sync/file..txt"));
+        assert!(!contains_dot_dot_segment("/sync/%2ename"));
+    }
+
+    /// ★ Regression test for the confirmed path-scope bypass finding: a
+    /// dot-segment (literal or percent-encoded) must be rejected by the
+    /// scope check itself, since a raw string prefix match alone would
+    /// approve a path that a downstream URL parser (reqwest, forwarding to
+    /// the upstream) later collapses into a different, out-of-scope path.
+    #[tokio::test]
+    async fn test_scoped_token_rejects_percent_encoded_dot_dot_traversal() {
+        let state = build_state(true).await;
+        let user = state.users.create("alice", "hunter2", "user").await.unwrap();
+        let (_row, plaintext) = state
+            .api_tokens
+            .create(user.id, "Sync-only device", 0, Some("/sync/"))
+            .await
+            .unwrap();
+        let server = test_server(state);
+
+        // Literally starts with "/sync/" as a raw string, but a URL parser
+        // downstream would collapse this to "/echo" (or worse, "/admin").
+        let response = server
+            .get("/sync/%2e%2e/echo")
+            .add_header("authorization", format!("Bearer {plaintext}"))
+            .await;
+
+        response.assert_status_forbidden();
+        let body = response.json::<serde_json::Value>();
+        assert_eq!(body["error"], "insufficient_scope");
+    }
+
+    #[tokio::test]
+    async fn test_scoped_token_rejects_literal_dot_dot_traversal() {
+        let state = build_state(true).await;
+        let user = state.users.create("alice", "hunter2", "user").await.unwrap();
+        let (_row, plaintext) = state
+            .api_tokens
+            .create(user.id, "Sync-only device", 0, Some("/sync/"))
+            .await
+            .unwrap();
+        let server = test_server(state);
+
+        let response = server
+            .get("/sync/../echo")
+            .add_header("authorization", format!("Bearer {plaintext}"))
+            .await;
+
+        response.assert_status_forbidden();
+        let body = response.json::<serde_json::Value>();
+        assert_eq!(body["error"], "insufficient_scope");
     }
 
     #[tokio::test]
