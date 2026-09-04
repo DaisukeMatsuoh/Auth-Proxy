@@ -32,7 +32,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # リポジトリ名を小文字に変換して IMAGE_NAME にセット
       - name: Set lowercase image name
