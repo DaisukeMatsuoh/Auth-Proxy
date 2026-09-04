@@ -60,23 +60,32 @@ fn insufficient_scope_response() -> Response {
         .into_response()
 }
 
-/// True if any `/`-separated segment of `path`, once percent-decoded, is
-/// exactly `..`.
+/// True if any path segment, once percent-decoded, is exactly `..`.
+/// Segments are split on both `/` and `\`.
 ///
 /// `req.uri().path()` is never normalized: `http::Uri` does not collapse
-/// dot-segments or decode percent-encoding. But when a scoped request is
-/// later forwarded to the upstream in `proxy::forward_to_upstream`, the
-/// outgoing URL goes through `reqwest`'s `Url::parse`, which DOES collapse
-/// dot-segments -- including percent-encoded ones like `%2e%2e` in any
-/// case combination. Without this check, a token scoped to
-/// `path_prefix = "/sync/"` could pass `starts_with("/sync/")` with a path
-/// like `/sync/%2e%2e/admin` here, yet the same request would resolve to
-/// `/admin` on the upstream once its URL is parsed -- a full scope bypass.
-/// This check must run before the prefix comparison and reject on any
-/// match, since the string being approved here is not the string that
-/// downstream URL parsing will ultimately act on.
+/// dot-segments, decode percent-encoding, or treat `\` as a separator. But
+/// when a scoped request is later forwarded to the upstream in
+/// `proxy::forward_to_upstream`, the outgoing URL goes through `reqwest`'s
+/// `Url::parse`, which DOES collapse dot-segments -- including
+/// percent-encoded ones like `%2e%2e` in any case combination -- AND, per
+/// the WHATWG URL Standard, treats a backslash exactly like a forward
+/// slash for "special" schemes such as http/https (confirmed directly in
+/// the vendored `url` crate's parser: a literal `\` is rewritten to `/`
+/// during parsing for these schemes). Without splitting on `\` too, a path
+/// like `/sync/..\admin` would slip through as a single unrecognized
+/// segment (`"..\admin"`) even though the upstream parses it as
+/// `/sync/../admin` and collapses it to `/admin`.
+///
+/// Without this check, a token scoped to `path_prefix = "/sync/"` could
+/// pass `starts_with("/sync/")` here with a path like `/sync/%2e%2e/admin`
+/// or `/sync/..\admin`, yet the same request would resolve to `/admin` on
+/// the upstream once its URL is parsed -- a full scope bypass. This check
+/// must run before the prefix comparison and reject on any match, since
+/// the string being approved here is not the string that downstream URL
+/// parsing will ultimately act on.
 fn contains_dot_dot_segment(path: &str) -> bool {
-    path.split('/').any(|segment| {
+    path.split(['/', '\\']).any(|segment| {
         urlencoding::decode(segment)
             .map(|decoded| decoded == "..")
             .unwrap_or(false)
@@ -404,6 +413,13 @@ mod tests {
         assert!(contains_dot_dot_segment("/sync/%2e./admin"));
         // A leading ".." segment (no prefix before it).
         assert!(contains_dot_dot_segment("../etc/passwd"));
+        // Backslash-separated: the `url` crate (used by reqwest when
+        // forwarding to the upstream) treats `\` exactly like `/` for
+        // "special" schemes such as http/https, so a dot-segment hidden
+        // behind a literal backslash must be caught too.
+        assert!(contains_dot_dot_segment("/sync/..\\admin"));
+        assert!(contains_dot_dot_segment("/sync/..\\%2e./admin"));
+        assert!(contains_dot_dot_segment("\\sync\\..\\admin"));
     }
 
     #[test]
@@ -460,6 +476,31 @@ mod tests {
 
         let response = server
             .get("/sync/../echo")
+            .add_header("authorization", format!("Bearer {plaintext}"))
+            .await;
+
+        response.assert_status_forbidden();
+        let body = response.json::<serde_json::Value>();
+        assert_eq!(body["error"], "insufficient_scope");
+    }
+
+    /// ★ Same bypass class, via a literal backslash instead of `../`. The
+    /// `url` crate (used by reqwest when forwarding to the upstream)
+    /// treats `\` exactly like `/` for special schemes such as http/https,
+    /// so this must be rejected too, not just the forward-slash form.
+    #[tokio::test]
+    async fn test_scoped_token_rejects_backslash_dot_dot_traversal() {
+        let state = build_state(true).await;
+        let user = state.users.create("alice", "hunter2", "user").await.unwrap();
+        let (_row, plaintext) = state
+            .api_tokens
+            .create(user.id, "Sync-only device", 0, Some("/sync/"))
+            .await
+            .unwrap();
+        let server = test_server(state);
+
+        let response = server
+            .get("/sync/..\\echo")
             .add_header("authorization", format!("Bearer {plaintext}"))
             .await;
 
