@@ -10,7 +10,7 @@
 services:
   auth-proxy:
     # Choose one: either use a pre-built image or build locally
-    image: ghcr.io/your-org/auth-proxy:latest # Use pre-built image (recommended)
+    image: ghcr.io/daisukematsuoh/auth-proxy:latest # Use pre-built image (recommended)
     # build: .                                     # Build locally from current directory
     ports:
       # Host port configurable via ${AUTH_PROXY_HOST_PORT} env var (default: 8080)
