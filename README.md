@@ -38,10 +38,11 @@ Set at least one of `AUTH_PROXY_SERVE_PATH` or `AUTH_PROXY_UPSTREAM_APP_URL`. **
 - [Environment Variable Reference](#environment-variable-reference)
 - [CLI Reference](#cli-reference)
 - [User Security Settings](#user-security-settings)
+- [API Token Authentication](#api-token-authentication)
 - [Headers Forwarded to Upstream](#headers-forwarded-to-upstream)
   - [Implementation Examples](#implementation-examples)
   - [Integration with Upstream Applications (Phase Me)](#integration-with-upstream-applications-phase-me)
-- [Guest Token Feature](#guest-token-feature)
+- [Guest Token Feature (Planned, Not Implemented)](#guest-token-feature-planned-not-implemented)
 - [Operations](#operations)
 - [Troubleshooting](#troubleshooting)
 - [Project Structure](#project-structure)
@@ -56,9 +57,13 @@ Set at least one of `AUTH_PROXY_SERVE_PATH` or `AUTH_PROXY_UPSTREAM_APP_URL`. **
 | Phase 2 | Web admin UI (list, add, edit, delete users) | ✅ Done |
 | Phase 3a | MFA (TOTP · backup codes · device remembering) | ✅ Done |
 | Phase 3a-2 | Admin-forced MFA disable · user security settings · password change | ✅ Done |
-| Phase 4 | Guest tokens (use-count limits · password-protected share links) | ✅ Done |
 | Phase Docker | Dockerfile · Compose example · mode validation | ✅ Done |
 | Phase Me | Stable public URLs (`/me`) for account settings integration | ✅ Done |
+| Phase API-1 | Bearer API token authentication for non-browser clients (opt-in) | ✅ Done |
+| Phase API-2 | Web UI for issuing/revoking your own API tokens (`/me/tokens`) | ✅ Done |
+| Phase API-3 | Path-scope restriction for API tokens (`path_prefix`) | ✅ Done |
+| Phase API-4 | CLI token management · admin-wide token visibility/revocation | ✅ Done |
+| Phase 4 | Guest tokens (use-count limits · password-protected share links) | 🔜 Planned — **designed but not implemented**, see below |
 | Phase 3b | Passkeys (WebAuthn) | 🔜 Planned |
 
 ---
@@ -454,8 +459,8 @@ AUTH_PROXY_LISTEN_PORT=8080         # [Static mode only] Uncomment and set the p
 AUTH_PROXY_SESSION_TTL_HOURS=8
 AUTH_PROXY_ISSUER_NAME=my-service
 AUTH_PROXY_MFA_ENCRYPTION_KEY=xxx    # generate with: openssl rand -hex 32
-AUTH_PROXY_GUEST_TOKEN_SECRET=yyy    # generate with: openssl rand -hex 32
-AUTH_PROXY_GUEST_TOKEN_API_KEY=zzz   # generate with: openssl rand -hex 32
+AUTH_PROXY_GUEST_TOKEN_SECRET=yyy    # reserved, not used yet (planned guest-token feature)
+AUTH_PROXY_GUEST_TOKEN_API_KEY=zzz   # reserved, not used yet (planned guest-token feature)
 
 ```
 
@@ -586,8 +591,10 @@ server {
 | `AUTH_PROXY_SESSION_TTL_HOURS` | — | `8` | Session lifetime in hours |
 | `AUTH_PROXY_ISSUER_NAME` | — | `auth-proxy` | Value of the `X-Auth-Issuer` header |
 | `AUTH_PROXY_MFA_ENCRYPTION_KEY` | — | ※2 | TOTP secret encryption key (64 hex characters) |
-| `AUTH_PROXY_GUEST_TOKEN_SECRET` | — | ※2 | Guest token signing key (64 hex characters) |
-| `AUTH_PROXY_GUEST_TOKEN_API_KEY` | — | ※2 | API key for the guest token issuance endpoint |
+| `AUTH_PROXY_GUEST_TOKEN_SECRET` | — | ※2 | **Reserved, not used yet** — parsed but read by no code; the guest-token feature it belongs to isn't implemented (see [Guest Token Feature](#guest-token-feature-planned-not-implemented)) |
+| `AUTH_PROXY_GUEST_TOKEN_API_KEY` | — | ※2 | **Reserved, not used yet** — same as above |
+| `AUTH_PROXY_API_TOKEN_ENABLED` | — | `false` | Enables `Authorization: Bearer` API token authentication (opt-in) — see [API Token Authentication](#api-token-authentication) |
+| `AUTH_PROXY_API_TOKEN_DEFAULT_TTL_DAYS` | — | `0` | Default expiry, in days, for newly issued API tokens. `0` = no expiry |
 | `RUST_LOG` | — | `info` | Log level (`trace` / `debug` / `info` / `warn` / `error`) |
 
 ※1 Set at least one of `AUTH_PROXY_SERVE_PATH` or `AUTH_PROXY_UPSTREAM_APP_URL`. Both unset is a startup error.
@@ -625,8 +632,8 @@ AUTH_PROXY_LISTEN_ADDR=127.0.0.1              # address part only
 AUTH_PROXY_LISTEN_PORT=8080                   # port part
 AUTH_PROXY_SESSION_TTL_HOURS=8
 AUTH_PROXY_MFA_ENCRYPTION_KEY=<openssl rand -hex 32>
-AUTH_PROXY_GUEST_TOKEN_SECRET=<openssl rand -hex 32>
-AUTH_PROXY_GUEST_TOKEN_API_KEY=<openssl rand -hex 32>
+AUTH_PROXY_GUEST_TOKEN_SECRET=<openssl rand -hex 32>   # reserved, not used yet
+AUTH_PROXY_GUEST_TOKEN_API_KEY=<openssl rand -hex 32>  # reserved, not used yet
 RUST_LOG=info
 ```
 
@@ -646,8 +653,8 @@ AUTH_PROXY_LISTEN_ADDR=0.0.0.0                        # address part only
 # AUTH_PROXY_LISTEN_PORT: do NOT set here; it comes from .env via docker-compose.yml
 AUTH_PROXY_SESSION_TTL_HOURS=8
 AUTH_PROXY_MFA_ENCRYPTION_KEY=<openssl rand -hex 32>
-AUTH_PROXY_GUEST_TOKEN_SECRET=<openssl rand -hex 32>
-AUTH_PROXY_GUEST_TOKEN_API_KEY=<openssl rand -hex 32>
+AUTH_PROXY_GUEST_TOKEN_SECRET=<openssl rand -hex 32>   # reserved, not used yet
+AUTH_PROXY_GUEST_TOKEN_API_KEY=<openssl rand -hex 32>  # reserved, not used yet
 RUST_LOG=info
 ```
 
@@ -716,6 +723,7 @@ All logged-in users can manage their own account security at `/settings/security
 | Enable MFA | `/settings/security` → MFA setup button | Scan a QR code with an authenticator app. Eight backup codes are issued on completion. |
 | Disable MFA | `/settings/security` → disable button | Requires current password confirmation. Backup codes and device tokens are deleted at the same time. |
 | Revoke all remembered devices | `/settings/security` → revoke button | Deletes all device tokens saved via "Remember this device for 30 days" |
+| API tokens | `/me/tokens` (→ `/settings/security/tokens`) | Issue/revoke your own API tokens for non-browser clients — see [API Token Authentication](#api-token-authentication) |
 
 ### Password Change Flow
 
@@ -749,6 +757,96 @@ All logged-in users can manage their own account security at `/settings/security
 
 ---
 
+## API Token Authentication
+
+Session cookies work well for browsers, but native apps, CLI tools, and CI pipelines can't easily
+handle a cookie jar, `SameSite=Strict`, or a `302 → /login` redirect on auth failure. API tokens
+solve this: a long-lived `Authorization: Bearer <token>` credential that behaves like a session for
+routing/header purposes, but never sets a cookie and always fails with a JSON error instead of a
+redirect.
+
+This feature is **opt-in and disabled by default** — enabling it does not change any existing
+session-cookie behavior.
+
+```dotenv
+# .env.auth-proxy
+AUTH_PROXY_API_TOKEN_ENABLED=true
+AUTH_PROXY_API_TOKEN_DEFAULT_TTL_DAYS=0   # 0 = tokens never expire by default
+```
+
+### Issuing a Token
+
+Three equivalent ways to issue a token for a user, once the feature is enabled:
+
+| Method | How |
+|---|---|
+| Web UI (recommended for people) | Log in, go to `/me/tokens` (redirects to `/settings/security/tokens`), click "issue a new token" |
+| CLI (recommended for automation/CI) | `auth-proxy token create --user <username> --name "<label>" [--path-prefix </sync/>]` |
+| JSON API (session-authenticated only) | `POST /api/tokens` with `{"name": "<label>", "path_prefix": "/sync/"}` |
+
+**The plaintext token is shown exactly once**, at issuance time. It is stored only as a SHA-256 hash
+— there is no way to retrieve it again after that; if it's lost, revoke it and issue a new one.
+
+```bash
+curl -s -X POST https://your-domain/api/tokens \
+  -H "Cookie: session_id=<your session cookie>" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Alice'\''s MacBook"}'
+# → {"id":1,"name":"Alice's MacBook","token":"apx_...","path_prefix":null}
+```
+
+### Using a Token
+
+```bash
+curl -H "Authorization: Bearer apx_..." https://your-domain/sync/v1/logs
+```
+
+On success, the request is forwarded upstream exactly like a session-authenticated request, with
+`X-Auth-Method: token` and `X-Auth-Token-Name: <label>` added (see
+[Headers Forwarded to Upstream](#headers-forwarded-to-upstream)). On failure, the response is always
+a `401`/`403` JSON body — never a redirect to `/login` — since a Bearer header marks the request as
+coming from a non-browser client:
+
+```json
+{"error": "invalid_token", "error_description": "The access token is invalid or has been revoked"}
+```
+
+### Path Scoping
+
+A token can optionally be restricted to a path prefix, so a leaked token for one integration can't
+be used to reach unrelated paths (or the admin panel):
+
+```bash
+auth-proxy token create --user alice --name "Sync service" --path-prefix /sync/
+```
+
+A token scoped to `/sync/` gets `403 insufficient_scope` on any request outside `/sync/*`. Omit
+`--path-prefix` (or leave it blank in the Web UI) for a token with full access, same as before this
+feature existed.
+
+### Revoking a Token
+
+- **Your own tokens**: `/settings/security/tokens`, or `DELETE /api/tokens/{id}` while
+  session-authenticated (a token can never revoke tokens, including itself — this always requires
+  session auth).
+- **Any user's token, as an admin**: `/admin/tokens` (linked from the admin dashboard), or
+  `auth-proxy token revoke <id>` from the CLI.
+
+### Design Notes
+
+- Tokens are 256-bit random values (`apx_<base64url>`), hashed with SHA-256 (not Argon2id — see
+  `docs/note/decisions/0001-api-token-bearer-auth.md` for why that's the correct tradeoff for a
+  high-entropy secret rather than a low-entropy password).
+- There is no rate limiting built into auth-proxy for API requests — brute-forcing a 256-bit token
+  is computationally infeasible regardless, so this wouldn't address a real threat. If you want
+  general request-volume protection (e.g. for `/login`), configure it in Traefik — see
+  [Rate Limiting](#rate-limiting) above and `docs/note/decisions/0003-cli-and-admin-token-visibility-rate-limit-to-traefik.md`.
+- Design rationale for each phase is recorded in `docs/note/decisions/` (ADRs 0001–0003) and
+  `docs/note/api-token-auth-runbook.md`, including two features that were deliberately **not**
+  built (a pairing-code device-linking flow, and an in-process rate limiter) and why.
+
+---
+
 ## Headers Forwarded to Upstream
 
 **Applies to proxy mode only.** This section is not relevant for static file mode.
@@ -761,11 +859,18 @@ auth-proxy adds the following headers to every authenticated request before forw
 | `X-Auth-User-Id` | User ID (stable integer, equivalent to OIDC `sub`) | `42` |
 | `X-Auth-Role` | Role | `admin` or `user` |
 | `X-Auth-Issuer` | Value of `AUTH_PROXY_ISSUER_NAME` | `auth-proxy` |
-| `X-Auth-Guest` | `true` for guest token access only; absent for normal sessions | `true` |
+| `X-Auth-Method` | How the request was authenticated | `session` or `token` |
+| `X-Auth-Token-Name` | The API token's user-assigned label (token auth only) | `Alice's MacBook` |
+| `X-Auth-Guest` | **Not implemented yet** — reserved for the planned guest-token feature (see below); never actually sent today | — |
 
-Because usernames can change, use `X-Auth-User-Id` as the stable identifier when the upstream service needs to associate records with a specific user.
+Because usernames can change, use `X-Auth-User-Id` as the stable identifier when the upstream service needs to associate records with a specific user. Use `X-Auth-Method` if your app needs to tell session traffic (browsers) apart from token traffic (e.g. to only allow token auth on a `/sync/*` API and require a real session for a web dashboard) — see [API Token Authentication](#api-token-authentication).
 
 ### Implementation Examples
+
+> The `X-Auth-Guest` checks below are forward-looking: the guest-token feature they refer to is not
+> implemented yet (see [Guest Token Feature](#guest-token-feature-planned-not-implemented)), so
+> `X-Auth-Guest` is never actually sent and these checks are always `false`. Everything else in
+> these snippets reflects the current, real header contract.
 
 ```javascript
 // Node.js (Express)
@@ -833,12 +938,7 @@ The `/me` URLs can be used in templates to provide links to user account setting
 // Node.js (Express) — add links to template
 app.get('/dashboard', (req, res) => {
   const username = req.get('X-Auth-User');
-  const isGuest = req.get('X-Auth-Guest') === 'true';
-  
-  if (isGuest) {
-    return res.render('guest-view', { /* guest content */ });
-  }
-  
+
   const settingsUrl = `/me?return_to=${encodeURIComponent(req.path)}`;
   res.render('dashboard', {
     username,
@@ -902,13 +1002,22 @@ const settingsUrl = `/me/password?return_to=${encodeURIComponent(currentPath)}`;
 
 ---
 
-## Guest Token Feature
+## Guest Token Feature (Planned, Not Implemented)
 
-Guest tokens allow limited, unauthenticated access to specific paths — managed centrally within auth-proxy. The upstream service only needs to tell auth-proxy which path to share; token generation, verification, and expiry are all handled by auth-proxy.
+> ⚠️ **This feature does not exist in the codebase yet.** There is no `/api/guest-token` endpoint,
+> no `guest_session_id` cookie, and no `X-Auth-Guest` header — sending the requests below will just
+> get you a `404`. This section describes the *design intent* for a future phase, kept here so the
+> intended shape is documented and so nobody accidentally reintroduces a half-matching
+> implementation without reading this first. If you're evaluating auth-proxy for a shared-link use
+> case today, it isn't ready for that yet.
 
-### Issuing a Token
+The intended design: guest tokens would allow limited, unauthenticated access to specific paths —
+managed centrally within auth-proxy, so the upstream service only needs to tell auth-proxy which
+path to share, and token generation/verification/expiry would be handled entirely by auth-proxy.
+The sketch below (not real, not implemented) illustrates the shape the API was expected to take:
 
 ```bash
+# NOT A REAL ENDPOINT — illustrative only
 curl -X POST https://your-domain/api/guest-token \
   -H "Authorization: Bearer <AUTH_PROXY_GUEST_TOKEN_API_KEY>" \
   -H "Content-Type: application/json" \
@@ -916,29 +1025,12 @@ curl -X POST https://your-domain/api/guest-token \
     "path": "/shared/report",
     "expires_in": 86400,
     "max_uses": 10,
-    "password": "secret123",
-    "ui": {
-      "title": "Q3 Report",
-      "description": "Enter the password from your invitation email"
-    }
+    "password": "secret123"
   }'
 ```
 
-| Parameter | Required | Description |
-|---|---|---|
-| `path` | ✅ | Path prefix to allow access to (must start with `/`) |
-| `expires_in` | ✅ | Token lifetime in seconds |
-| `max_uses` | — | Maximum number of accesses. Omit for unlimited. |
-| `password` | — | Optional password. Omit to allow access via URL alone. |
-| `ui.title` / `ui.description` | — | Text displayed on the password entry form |
-
-### End-User Access
-
-```
-https://your-domain/shared/report?guest_token=<token>
-```
-
-If a password is set, a form is displayed. After entering the correct password, a `guest_session_id` cookie is issued, allowing continued access without re-entering the token in the URL.
+`AUTH_PROXY_GUEST_TOKEN_SECRET` and `AUTH_PROXY_GUEST_TOKEN_API_KEY` exist as parsed-but-unused
+config fields, placeholders for whenever this is actually built.
 
 ---
 
@@ -951,6 +1043,7 @@ Use the browser-based admin UI for day-to-day user management. The CLI is a seco
 ```bash
 # Open the admin UI in a browser (both modes)
 https://your-domain/admin/users
+https://your-domain/admin/tokens   # every user's API tokens; revoke on offboarding
 ```
 
 CLI verification (method differs by mode):
@@ -1050,36 +1143,46 @@ auth-proxy/
 ├── docker-compose.example.yml
 ├── .env.auth-proxy.example
 ├── .dockerignore
-├── migrations/                    # SQLite migration files
+├── migrations/                    # SQLite migration files (append-only; never edit an existing one)
+├── docs/note/                     # Design decisions (ADRs) and implementation runbooks
 ├── internal/                      # Internal specification documents
 └── src/
     ├── main.rs                    # Entry point · CLI dispatch
     ├── config.rs                  # Environment variable loading · mode validation
-    ├── users.rs                   # UserStore (Argon2id)
-    ├── session.rs                 # SessionStore
-    ├── mfa.rs                     # MfaStore (TOTP · backup codes · device tokens)
-    ├── state.rs                   # AppState (DB · HTTP client)
+    ├── state.rs                   # AppState (Arc-wrapped stores, DB pool, HTTP client). Runs migrations.
     ├── router.rs                  # Route definitions
+    ├── users.rs                   # Parses the APP_USERS/AUTH_PROXY_USERS seed format only — not the live store
+    ├── users_db.rs                # UserStoreDb — the live, SQLite-backed user store (Argon2id)
+    ├── session.rs                 # In-memory SessionStore — dead code, kept for its own unit tests
+    ├── sessions_db.rs             # SessionStoreDb — the live, SQLite-backed session store
+    ├── api_tokens_db.rs           # ApiTokenStoreDb — issue/verify/revoke Bearer API tokens (SHA-256 hashed)
+    ├── mfa.rs                     # MfaStore (TOTP · backup codes · device tokens)
     ├── handlers/
     │   ├── login.rs               # GET/POST /login
     │   ├── logout.rs              # POST /logout
     │   ├── proxy.rs               # /* fallback (static files or upstream proxy)
+    │   ├── static_files.rs        # Static file serving (AUTH_PROXY_SERVE_PATH mode)
     │   ├── mfa.rs                 # MFA verification flow
+    │   ├── me.rs                  # GET /me, /me/password, /me/mfa, /me/devices, /me/tokens (stable redirect URLs)
+    │   ├── api_tokens.rs          # GET/POST /api/tokens, DELETE /api/tokens/{id} (session auth only)
     │   ├── settings/
     │   │   ├── mod.rs             # GET/POST /settings/mfa/*
-    │   │   └── security.rs        # GET/POST /settings/security/*
+    │   │   ├── security.rs        # GET/POST /settings/security/*
+    │   │   └── tokens.rs          # GET/POST /settings/security/tokens (your own API tokens)
     │   └── admin/
     │       ├── mod.rs
     │       ├── dashboard.rs       # GET /admin/
-    │       └── users.rs           # GET/POST /admin/users/*
+    │       ├── users.rs           # GET/POST /admin/users/*
+    │       └── tokens.rs          # GET /admin/tokens, POST /admin/tokens/{id}/revoke (any user's tokens)
     ├── middleware/
-    │   ├── auth.rs                # Session validation · X-Auth-* spoofing prevention
-    │   └── admin.rs               # Admin role check
+    │   ├── auth.rs                # Bearer/session auth resolution · X-Auth-* spoofing prevention · path scoping
+    │   └── admin.rs                # Defines AuthUser; admin_middleware fn exists but is unwired (dead code)
     └── cli/
         ├── hash.rs
         ├── verify.rs
         ├── list.rs
-        └── init_admin.rs
+        ├── init_admin.rs
+        └── token.rs               # `auth-proxy token list/revoke/create`
 ```
 
 ---

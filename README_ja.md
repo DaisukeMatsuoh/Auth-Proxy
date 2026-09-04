@@ -38,8 +38,9 @@ auth-proxyは二種類の使い方があります。
 - [環境変数リファレンス](#環境変数リファレンス)
 - [CLIリファレンス](#cliリファレンス)
 - [ユーザー向けセキュリティ設定](#ユーザー向けセキュリティ設定)
+- [APIトークン認証](#apiトークン認証)
 - [上流サービスへのヘッダー伝達](#上流サービスへのヘッダー伝達)
-- [ゲストトークン機能](#ゲストトークン機能)
+- [ゲストトークン機能(計画中・未実装)](#ゲストトークン機能計画中未実装)
 - [運用](#運用)
 - [トラブルシューティング](#トラブルシューティング)
 - [プロジェクト構成](#プロジェクト構成)
@@ -54,8 +55,13 @@ auth-proxyは二種類の使い方があります。
 | Phase 2 | Web管理画面（ユーザー一覧・追加・編集・削除） | ✅ 実装済み |
 | Phase 3a | MFA（TOTP・バックアップコード・デバイス記憶） | ✅ 実装済み |
 | Phase 3a-2 | 管理者MFA強制無効化・ユーザーセキュリティ設定・パスワード変更 | ✅ 実装済み |
-| Phase 4 | ゲストトークン機能（回数制限・パスワード付き共有リンク） | ✅ 実装済み |
 | Phase Docker | Dockerfile・Compose例・動作モード検証 | ✅ 実装済み |
+| Phase Me | 安定した公開URL(`/me`)でのアカウント設定連携 | ✅ 実装済み |
+| Phase API-1 | ブラウザ以外のクライアント向けBearer APIトークン認証(オプトイン) | ✅ 実装済み |
+| Phase API-2 | 自分のAPIトークンを発行・失効するWeb UI(`/me/tokens`) | ✅ 実装済み |
+| Phase API-3 | APIトークンのパススコープ制限(`path_prefix`) | ✅ 実装済み |
+| Phase API-4 | CLIでのトークン管理・管理画面での全ユーザートークン可視化/失効 | ✅ 実装済み |
+| Phase 4 | ゲストトークン機能（回数制限・パスワード付き共有リンク） | 🔜 予定 — **設計はあるが未実装**。詳細は後述 |
 | Phase 3b | パスキー（WebAuthn） | 🔜 予定 |
 
 ---
@@ -177,6 +183,31 @@ http:
           - url: "http://127.0.0.1:8080"
 ```
 
+### レート制限
+
+auth-proxy自体はリクエストのレート制限を実装していません(理由は`docs/note/decisions/`の
+ADR 0003を参照: APIトークンは256bitのランダム値なので、レート制限があってもなくても
+総当たりは計算量的に不可能であり、汎用的なリクエスト量の制御は認証プロキシではなく
+Traefikの責務と考えているため)。`/login`のパスワード総当たり対策や、一般的な悪用対策として
+リクエスト量を制限したい場合は、Traefik側で設定してください。
+
+```yaml
+http:
+  middlewares:
+    auth-proxy-ratelimit:
+      rateLimit:
+        average: 100
+        burst: 50
+  routers:
+    my-docs:
+      rule: "Host(`docs.example.com`)"
+      entryPoints:
+        - websecure
+      tls: {}
+      middlewares:
+        - auth-proxy-ratelimit
+      service: auth-proxy-svc
+```
 
 
 ## デプロイ: プロキシモード (Docker)
@@ -409,8 +440,8 @@ AUTH_PROXY_LISTEN_ADDR=0.0.0.0   # コンテナ内のリッスンアドレス（
 AUTH_PROXY_SESSION_TTL_HOURS=8
 AUTH_PROXY_ISSUER_NAME=my-service
 AUTH_PROXY_MFA_ENCRYPTION_KEY=xxx    # ← openssl rand -hex 32などで作成したランダムシードを記載
-AUTH_PROXY_GUEST_TOKEN_SECRET=yyy    # ← openssl rand -hex 32などで作成したランダムシードを記載
-AUTH_PROXY_GUEST_TOKEN_API_KEY=zzz   # ← openssl rand -hex 32などで作成したランダムシードを記載
+AUTH_PROXY_GUEST_TOKEN_SECRET=yyy    # 予約済み・未使用(計画中のゲストトークン機能用)
+AUTH_PROXY_GUEST_TOKEN_API_KEY=zzz   # 予約済み・未使用(計画中のゲストトークン機能用)
 ```
 
 **ポート設定について**:
@@ -558,8 +589,10 @@ server {
 | `AUTH_PROXY_SESSION_TTL_HOURS` | — | `8` | セッション有効期間（時間） |
 | `AUTH_PROXY_ISSUER_NAME` | — | `auth-proxy` | `X-Auth-Issuer` ヘッダーの値 |
 | `AUTH_PROXY_MFA_ENCRYPTION_KEY` | — | ※2 | TOTP シークレットの暗号化キー（hex 64文字） |
-| `AUTH_PROXY_GUEST_TOKEN_SECRET` | — | ※2 | ゲストトークン署名キー（hex 64文字） |
-| `AUTH_PROXY_GUEST_TOKEN_API_KEY` | — | ※2 | ゲストトークン発行 API の認証キー |
+| `AUTH_PROXY_GUEST_TOKEN_SECRET` | — | ※2 | **予約済み・未使用** — パースはされるがどのコードからも参照されない。対応する機能([ゲストトークン機能](#ゲストトークン機能計画中未実装))自体が未実装 |
+| `AUTH_PROXY_GUEST_TOKEN_API_KEY` | — | ※2 | **予約済み・未使用** — 上記と同様 |
+| `AUTH_PROXY_API_TOKEN_ENABLED` | — | `false` | `Authorization: Bearer` によるAPIトークン認証を有効化(オプトイン)。[APIトークン認証](#apiトークン認証)を参照 |
+| `AUTH_PROXY_API_TOKEN_DEFAULT_TTL_DAYS` | — | `0` | 新規発行するAPIトークンのデフォルト有効期限(日数)。`0`で無期限 |
 | `RUST_LOG` | — | `info` | ログレベル（`trace` / `debug` / `info` / `warn` / `error`） |
 
 ※1 `AUTH_PROXY_SERVE_PATH` と `AUTH_PROXY_UPSTREAM_APP_URL` はいずれか一方または両方を設定してください。両方未設定の場合は起動エラーになります。
@@ -598,8 +631,8 @@ AUTH_PROXY_LISTEN_ADDR=127.0.0.1              # address part only
 AUTH_PROXY_LISTEN_PORT=8080                   # port part
 AUTH_PROXY_SESSION_TTL_HOURS=8
 AUTH_PROXY_MFA_ENCRYPTION_KEY=<openssl rand -hex 32>
-AUTH_PROXY_GUEST_TOKEN_SECRET=<openssl rand -hex 32>
-AUTH_PROXY_GUEST_TOKEN_API_KEY=<openssl rand -hex 32>
+AUTH_PROXY_GUEST_TOKEN_SECRET=<openssl rand -hex 32>   # 予約済み・未使用
+AUTH_PROXY_GUEST_TOKEN_API_KEY=<openssl rand -hex 32>  # 予約済み・未使用
 RUST_LOG=info
 ```
 
@@ -621,8 +654,8 @@ AUTH_PROXY_LISTEN_ADDR=0.0.0.0                        # address part only
 # AUTH_PROXY_LISTEN_PORT: do NOT set here; it comes from .env via docker-compose.yml
 AUTH_PROXY_SESSION_TTL_HOURS=8
 AUTH_PROXY_MFA_ENCRYPTION_KEY=<openssl rand -hex 32>
-AUTH_PROXY_GUEST_TOKEN_SECRET=<openssl rand -hex 32>
-AUTH_PROXY_GUEST_TOKEN_API_KEY=<openssl rand -hex 32>
+AUTH_PROXY_GUEST_TOKEN_SECRET=<openssl rand -hex 32>   # 予約済み・未使用
+AUTH_PROXY_GUEST_TOKEN_API_KEY=<openssl rand -hex 32>  # 予約済み・未使用
 RUST_LOG=info
 ```
 
@@ -637,6 +670,9 @@ auth-proxy は以下のサブコマンドを持っています。
 | `hash` | パスワードの Argon2id ハッシュを生成 |
 | `verify <username>` | ユーザーのパスワードを検証（デバッグ用） |
 | `list` | 登録済みユーザーを一覧表示 |
+| `token list [--user <username>]` | APIトークンを一覧表示(全ユーザー、または指定ユーザーのみ) |
+| `token revoke <id>` | 所有者に関わらずAPIトークンを失効 |
+| `token create --user <username> --name <name> [--path-prefix </sync/>]` | APIトークンを発行し、平文トークンを1回だけ表示 |
 
 ### 静的ファイルモード（シングルバイナリ）の場合
 
@@ -647,7 +683,15 @@ auth-proxy init-admin
 auth-proxy list
 auth-proxy verify alice
 auth-proxy hash
+auth-proxy token create --user alice --name "CIデプロイ用" --path-prefix /sync/
+auth-proxy token list
+auth-proxy token revoke 3
 ```
+
+> **CI利用時の注意**: `token create` は平文トークンを標準出力に1回だけ表示します(二度と
+> 取得できません)。CIパイプラインからこのコマンドを実行する場合、そのステップのログ出力を
+> マスク/リダクトする設定にしてください。マスクしないと、CIシステムのログ保管先(CIのシークレット
+> ストアより保護レベルが低いことが多い)にトークンが平文で残ってしまいます。
 
 ### プロキシモード（Docker）の場合
 
@@ -658,6 +702,7 @@ auth-proxy hash
 docker compose exec auth-proxy auth-proxy list
 docker compose exec auth-proxy auth-proxy verify alice
 docker compose exec auth-proxy auth-proxy hash
+docker compose exec auth-proxy auth-proxy token create --user alice --name "CIデプロイ用"
 
 # サーバーを起動せずに一時コンテナで実行するコマンド（run）
 # init-admin はサーバー起動前に実行するため run を使う
@@ -679,6 +724,7 @@ docker compose run --rm auth-proxy init-admin
 | MFA有効化 | `/settings/security` → MFA設定ボタン | QRコードをスキャンしてTOTPを登録。完了時にバックアップコード8本を発行 |
 | MFA無効化 | `/settings/security` → MFA無効化ボタン | 現在のパスワードを再確認して無効化。バックアップコード・デバイス記憶も同時に削除 |
 | デバイス記憶の全削除 | `/settings/security` → デバイス削除ボタン | 「このデバイスを30日間記憶する」で保存したすべてのデバイストークンを削除 |
+| APIトークン | `/me/tokens`（→ `/settings/security/tokens`） | ブラウザ以外のクライアント向けAPIトークンの発行・失効。詳細は[APIトークン認証](#apiトークン認証)を参照 |
 
 ### パスワード変更の流れ
 
@@ -712,6 +758,97 @@ docker compose run --rm auth-proxy init-admin
 
 ---
 
+## APIトークン認証
+
+セッションCookieはブラウザには向いていますが、ネイティブアプリ・CLIツール・CIパイプラインは
+Cookie jarや`SameSite=Strict`、認証失敗時の`302 → /login`リダイレクトをうまく扱えません。
+APIトークンはこれを解決します。`Authorization: Bearer <token>`という長期有効なクレデンシャルで、
+ルーティング・ヘッダーの観点ではセッションと同じように振る舞いますが、Cookieは一切発行せず、
+認証失敗時は常にリダイレクトではなくJSONエラーを返します。
+
+この機能は**デフォルト無効のオプトイン**です。有効化しても既存のセッションCookieの挙動は
+一切変わりません。
+
+```dotenv
+# .env.auth-proxy
+AUTH_PROXY_API_TOKEN_ENABLED=true
+AUTH_PROXY_API_TOKEN_DEFAULT_TTL_DAYS=0   # 0 = デフォルトで無期限
+```
+
+### トークンの発行
+
+機能を有効化すれば、以下の3つの同等な方法でユーザーのトークンを発行できます。
+
+| 方法 | 手順 |
+|---|---|
+| Web UI(人間向け・推奨) | ログインして `/me/tokens`(→`/settings/security/tokens`にリダイレクト)へ。「新しいトークンを発行」をクリック |
+| CLI(自動化・CI向け・推奨) | `auth-proxy token create --user <username> --name "<ラベル>" [--path-prefix </sync/>]` |
+| JSON API(セッション認証必須) | `POST /api/tokens` に `{"name": "<ラベル>", "path_prefix": "/sync/"}` |
+
+**平文トークンは発行時に1回だけ表示されます。** DBにはSHA-256ハッシュのみ保存されるため、
+その後は二度と取得できません。紛失した場合は失効させて新しいトークンを発行してください。
+
+```bash
+curl -s -X POST https://your-domain/api/tokens \
+  -H "Cookie: session_id=<あなたのセッションCookie>" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Alice の MacBook"}'
+# → {"id":1,"name":"Alice の MacBook","token":"apx_...","path_prefix":null}
+```
+
+### トークンの利用
+
+```bash
+curl -H "Authorization: Bearer apx_..." https://your-domain/sync/v1/logs
+```
+
+成功時はセッション認証済みのリクエストと全く同じように上流に転送され、
+`X-Auth-Method: token` と `X-Auth-Token-Name: <ラベル>` が付与されます
+（[上流サービスへのヘッダー伝達](#上流サービスへのヘッダー伝達)を参照）。失敗時は常に
+`401`/`403` のJSONが返り、**`/login`へのリダイレクトにはなりません**（`Bearer`ヘッダーの存在が
+「ブラウザ以外のクライアントである」ことを示すため）:
+
+```json
+{"error": "invalid_token", "error_description": "The access token is invalid or has been revoked"}
+```
+
+### パススコープ制限
+
+トークンを特定のパスプレフィックに制限できます。漏洩したトークンが無関係なパス
+（や管理画面）へアクセスするのを防げます。
+
+```bash
+auth-proxy token create --user alice --name "Sync service" --path-prefix /sync/
+```
+
+`/sync/`にスコープされたトークンは、`/sync/*` 以外へのリクエストで `403 insufficient_scope`
+になります。`--path-prefix`を省略する(またはWeb UIで空欄にする)と、この機能導入前と同じ
+全パスアクセス可能なトークンになります。
+
+### トークンの失効
+
+- **自分のトークン**: `/settings/security/tokens`、またはセッション認証下で
+  `DELETE /api/tokens/{id}`(トークン自身では、自分自身を含めどのトークンも失効できません。
+  常にセッション認証が必要です)。
+- **任意ユーザーのトークン(管理者)**: `/admin/tokens`(管理ダッシュボードからリンク)、
+  またはCLIの `auth-proxy token revoke <id>`。
+
+### 設計上の注意点
+
+- トークンは256bitのランダム値(`apx_<base64url>`)で、SHA-256でハッシュ化しています
+  (Argon2idではありません — 低エントロピーのパスワードではなく高エントロピーな秘密情報に
+  対する適切なトレードオフである理由は `docs/note/decisions/0001-api-token-bearer-auth.md`
+  を参照)。
+- auth-proxy自体にはAPIリクエストのレート制限機能はありません。256bitトークンの総当たりは
+  レート制限の有無に関わらず計算量的に不可能なため、実装しても実際の脅威には対応できないと
+  判断しています。汎用的なリクエスト量の制御(`/login`保護等)をしたい場合はTraefik側で
+  設定してください([レート制限](#レート制限)、`docs/note/decisions/0003-cli-and-admin-token-visibility-rate-limit-to-traefik.md`を参照)。
+- 各フェーズの設計判断は `docs/note/decisions/`(ADR 0001〜0003)と
+  `docs/note/api-token-auth-runbook.md` に記録されています。ペアリングコード方式や
+  アプリ内蔵のレート制限など、**意図的に実装しなかった**機能とその理由も含まれています。
+
+---
+
 ## 上流サービスへのヘッダー伝達
 
 **プロキシモードのみ適用されます。**静的ファイルモードではこの章は関係ありません。
@@ -724,9 +861,11 @@ docker compose run --rm auth-proxy init-admin
 | `X-Auth-User-Id` | ユーザーID（変更されない数値。OIDC の `sub` 相当） | `42` |
 | `X-Auth-Role` | ロール | `admin` または `user` |
 | `X-Auth-Issuer` | `AUTH_PROXY_ISSUER_NAME` の値 | `auth-proxy` |
-| `X-Auth-Guest` | ゲストトークンアクセス時のみ `true`。通常セッションには付与しない | `true` |
+| `X-Auth-Method` | 認証方式 | `session` または `token` |
+| `X-Auth-Token-Name` | APIトークンの識別名(トークン認証時のみ) | `Alice の MacBook` |
+| `X-Auth-Guest` | **未実装** — 計画中のゲストトークン機能用に予約(後述)。現状は一切送信されない | — |
 
-ユーザー名は変更される可能性があるため、上流サービスが永続的にユーザーを識別する場合は `X-Auth-User-Id` を主キーとして扱ってください。
+ユーザー名は変更される可能性があるため、上流サービスが永続的にユーザーを識別する場合は `X-Auth-User-Id` を主キーとして扱ってください。セッション由来のトラフィックとトークン由来のトラフィックを区別したい場合(例: `/sync/*` はトークン認証のみ許可し、Web画面はセッション認証を要求する等)は `X-Auth-Method` を使ってください。詳細は[APIトークン認証](#apiトークン認証)を参照してください。
 
 ### 実装例
 
@@ -751,13 +890,22 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 ---
 
-## ゲストトークン機能
+## ゲストトークン機能(計画中・未実装)
 
-ログイン不要の限定公開アクセスを、認証の文脈で一元管理できる機能です。上流サービスはどのパスを共有するかを auth-proxy に伝えるだけでよく、トークン生成・検証・期限管理はすべて auth-proxy が行います。
+> ⚠️ **この機能はまだコードベースに存在しません。** `/api/guest-token` エンドポイントも
+> `guest_session_id` Cookieも `X-Auth-Guest` ヘッダーも実装されておらず、以下のリクエストを
+> 送っても `404` が返るだけです。このセクションは*将来のフェーズの設計意図*を記録するために
+> 残してあります。誰かが本セクションを読まずに「なんとなく近い」実装を作ってしまうことを
+> 防ぐ目的もあります。共有リンクのようなユースケースで今すぐ評価したい場合、この機能は
+> まだ使えません。
 
-### トークン発行
+想定している設計: ゲストトークンは、特定のパスへの限定的な未認証アクセスを、auth-proxy内で
+一元管理できるようにするものです。上流サービスはどのパスを共有するかをauth-proxyに伝えるだけで
+よく、トークン生成・検証・期限管理はすべてauth-proxyが行う想定でした。以下は
+(実在しない、未実装の)想定していたAPIの形のスケッチです。
 
 ```bash
+# 実在しないエンドポイントです — あくまでイメージ
 curl -X POST https://your-domain/api/guest-token \
   -H "Authorization: Bearer <AUTH_PROXY_GUEST_TOKEN_API_KEY>" \
   -H "Content-Type: application/json" \
@@ -765,29 +913,12 @@ curl -X POST https://your-domain/api/guest-token \
     "path": "/shared/report",
     "expires_in": 86400,
     "max_uses": 10,
-    "password": "secret123",
-    "ui": {
-      "title": "Q3レポート",
-      "description": "招待メールに記載のパスワードを入力してください"
-    }
+    "password": "secret123"
   }'
 ```
 
-| パラメータ | 必須 | 説明 |
-|---|---|---|
-| `path` | ✅ | アクセスを許可するパスプレフィックス（`/` で始まること） |
-| `expires_in` | ✅ | 有効期間（秒） |
-| `max_uses` | — | 最大アクセス回数。省略で無制限 |
-| `password` | — | パスワード。省略するとURLのみでアクセス可能 |
-| `ui.title` / `ui.description` | — | パスワード入力フォームに表示するテキスト |
-
-### エンドユーザーのアクセス
-
-```
-https://your-domain/shared/report?guest_token=<token>
-```
-
-パスワードが設定されている場合はフォームが表示され、正しいパスワードを入力すると `guest_session_id` Cookie が発行されます。
+`AUTH_PROXY_GUEST_TOKEN_SECRET` と `AUTH_PROXY_GUEST_TOKEN_API_KEY` は、パースはされるものの
+どこからも参照されない設定項目として存在しています。実際に実装される日のためのプレースホルダーです。
 
 ---
 
@@ -800,6 +931,7 @@ https://your-domain/shared/report?guest_token=<token>
 ```bash
 # ブラウザで管理画面を開く（両モード共通）
 https://your-domain/admin/users
+https://your-domain/admin/tokens   # 全ユーザーのAPIトークン。退職者対応時などに失効させる
 ```
 
 CLIでの確認（モードによって実行方法が異なります）:
@@ -899,36 +1031,46 @@ auth-proxy/
 ├── docker-compose.example.yml
 ├── .env.auth-proxy.example
 ├── .dockerignore
-├── migrations/                    # SQLite マイグレーションファイル
+├── migrations/                    # SQLite マイグレーションファイル(追記のみ。既存ファイルは変更しない)
+├── docs/note/                     # 設計判断の記録(ADR)と実装runbook
 ├── internal/                      # 仕様書（非公開）
 └── src/
     ├── main.rs                    # エントリポイント・CLI ディスパッチ
     ├── config.rs                  # 環境変数読み込み・モード検証
-    ├── users.rs                   # UserStore (Argon2id)
-    ├── session.rs                 # SessionStore
-    ├── mfa.rs                     # MfaStore (TOTP・バックアップコード・デバイス記憶)
-    ├── state.rs                   # AppState（DB・HTTPクライアント）
+    ├── state.rs                   # AppState（Arc化された各ストア・DBプール・HTTPクライアント。マイグレーション実行もここ）
     ├── router.rs                  # ルーティング定義
+    ├── users.rs                   # APP_USERS/AUTH_PROXY_USERS のシード形式パーサーのみ。実運用のストアではない
+    ├── users_db.rs                # UserStoreDb — 実際に使われるSQLiteベースのユーザーストア(Argon2id)
+    ├── session.rs                 # インメモリ版SessionStore — デッドコード(自身の単体テストのためだけに残存)
+    ├── sessions_db.rs             # SessionStoreDb — 実際に使われるSQLiteベースのセッションストア
+    ├── api_tokens_db.rs           # ApiTokenStoreDb — Bearer APIトークンの発行・検証・失効(SHA-256ハッシュ)
+    ├── mfa.rs                     # MfaStore (TOTP・バックアップコード・デバイス記憶)
     ├── handlers/
     │   ├── login.rs               # GET/POST /login
     │   ├── logout.rs              # POST /logout
     │   ├── proxy.rs               # /* フォールバック（静的ファイル or 上流転送）
+    │   ├── static_files.rs        # 静的ファイル配信（AUTH_PROXY_SERVE_PATHモード）
     │   ├── mfa.rs                 # MFA 検証フロー
+    │   ├── me.rs                  # GET /me, /me/password, /me/mfa, /me/devices, /me/tokens（安定リダイレクトURL）
+    │   ├── api_tokens.rs          # GET/POST /api/tokens, DELETE /api/tokens/{id}（セッション認証のみ）
     │   ├── settings/
     │   │   ├── mod.rs             # GET/POST /settings/mfa/*
-    │   │   └── security.rs        # GET/POST /settings/security/*
+    │   │   ├── security.rs        # GET/POST /settings/security/*
+    │   │   └── tokens.rs          # GET/POST /settings/security/tokens（自分のAPIトークン）
     │   └── admin/
     │       ├── mod.rs
     │       ├── dashboard.rs       # GET /admin/
-    │       └── users.rs           # GET/POST /admin/users/*
+    │       ├── users.rs           # GET/POST /admin/users/*
+    │       └── tokens.rs          # GET /admin/tokens, POST /admin/tokens/{id}/revoke（全ユーザーのトークン）
     ├── middleware/
-    │   ├── auth.rs                # セッション検証・X-Auth-* 偽装防止
-    │   └── admin.rs               # 管理者ロール確認
+    │   ├── auth.rs                # Bearer/セッション認証解決・X-Auth-* 偽装防止・パススコープ検証
+    │   └── admin.rs                # AuthUserの定義。admin_middleware関数は存在するが未配線（デッドコード）
     └── cli/
         ├── hash.rs
         ├── verify.rs
         ├── list.rs
-        └── init_admin.rs
+        ├── init_admin.rs
+        └── token.rs               # `auth-proxy token list/revoke/create`
 ```
 
 ---
