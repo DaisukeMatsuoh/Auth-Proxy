@@ -36,7 +36,12 @@ pub async fn serve_static_files(
         path = "index.html".to_string();
     }
 
-    // Prevent directory traversal
+    // Prevent directory traversal. Intentionally simpler than
+    // `middleware::auth::contains_dot_dot_segment` (no percent-decoding):
+    // this guards a filesystem path, and `tokio::fs`/`std::fs` never decode
+    // percent-encoding, so a segment literally named "%2e%2e" cannot
+    // resolve to a real ".." directory on disk. Not interchangeable with
+    // the API-token path-scope check, which guards a re-parsed URL instead.
     let request_path = PathBuf::from(&path);
     if request_path.components().any(|c| c.as_os_str() == "..") {
         return Err(AppError::NotFound);

@@ -22,10 +22,44 @@ pub struct ApiTokenRow {
 pub enum ApiTokenDbError {
     #[error("Database error: {0}")]
     DbError(#[from] sqlx::Error),
+    #[error("Invalid path_prefix: {0}")]
+    InvalidPathPrefix(String),
 }
 
 const SELECT_COLUMNS: &str =
     "id, user_id, name, path_prefix, expires_at, last_used_at, revoked_at, created_at";
+
+/// Normalize and validate an optional path-scope prefix (Phase API-3, R7).
+/// Blank input means "no restriction" (`None`).
+///
+/// Lives here (not in a handler) so every caller of `ApiTokenStoreDb::create`
+/// gets this for free, including a future CLI-based issuance path that
+/// wouldn't otherwise know to call it.
+///
+/// - A non-empty prefix must start with `/`, otherwise it could never match
+///   a request path (`req.uri().path()` always starts with `/`) and the
+///   token would be silently unusable.
+/// - A trailing `/` is enforced (appended if missing) so the prefix check
+///   in `auth_middleware` (a plain `starts_with`) can only ever match a
+///   full path segment boundary. Without this, a token scoped to `/sync`
+///   would also match an unrelated sibling path like `/synchronize-logs`.
+pub fn validate_path_prefix(raw: Option<&str>) -> Result<Option<String>, ApiTokenDbError> {
+    let Some(raw) = raw else { return Ok(None) };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if !trimmed.starts_with('/') {
+        return Err(ApiTokenDbError::InvalidPathPrefix(
+            "path_prefix must start with '/'".to_string(),
+        ));
+    }
+    if trimmed.ends_with('/') {
+        Ok(Some(trimmed.to_string()))
+    } else {
+        Ok(Some(format!("{trimmed}/")))
+    }
+}
 
 pub struct ApiTokenStoreDb {
     pool: SqlitePool,
@@ -69,6 +103,8 @@ impl ApiTokenStoreDb {
         ttl_days: u32,
         path_prefix: Option<&str>,
     ) -> Result<(ApiTokenRow, String), ApiTokenDbError> {
+        let path_prefix = validate_path_prefix(path_prefix)?;
+
         let (plaintext, hash) = Self::generate_token();
         let expires_at = if ttl_days > 0 {
             Some((Utc::now() + chrono::Duration::days(ttl_days as i64)).to_rfc3339())
@@ -83,7 +119,7 @@ impl ApiTokenStoreDb {
         .bind(&hash)
         .bind(name)
         .bind(&expires_at)
-        .bind(path_prefix)
+        .bind(&path_prefix)
         .execute(&self.pool)
         .await?;
 
@@ -280,6 +316,51 @@ mod tests {
         let alice_tokens = store.list_for_user(user_id).await.unwrap();
         assert_eq!(alice_tokens.len(), 1);
         assert_eq!(alice_tokens[0].name, "Alice's token");
+    }
+
+    #[test]
+    fn test_validate_path_prefix_none_or_blank_means_no_restriction() {
+        assert_eq!(validate_path_prefix(None).unwrap(), None);
+        assert_eq!(validate_path_prefix(Some("")).unwrap(), None);
+        assert_eq!(validate_path_prefix(Some("   ")).unwrap(), None);
+    }
+
+    #[test]
+    fn test_validate_path_prefix_accepts_leading_slash() {
+        assert_eq!(validate_path_prefix(Some("/sync/")).unwrap(), Some("/sync/".to_string()));
+        assert_eq!(validate_path_prefix(Some("  /sync/  ")).unwrap(), Some("/sync/".to_string()));
+    }
+
+    #[test]
+    fn test_validate_path_prefix_rejects_missing_leading_slash() {
+        // Without a leading slash, req.uri().path() (always "/...") could
+        // never match, silently locking the token out of everything.
+        assert!(validate_path_prefix(Some("sync/")).is_err());
+    }
+
+    /// ★ Regression test for the confirmed segment-boundary finding: a
+    /// prefix without a trailing slash must not accidentally match an
+    /// unrelated sibling path that merely shares the string prefix.
+    #[test]
+    fn test_validate_path_prefix_auto_appends_trailing_slash() {
+        let normalized = validate_path_prefix(Some("/sync")).unwrap().unwrap();
+        assert_eq!(normalized, "/sync/");
+        assert!(!"/synchronize-logs".starts_with(&normalized));
+        assert!("/sync/logs".starts_with(&normalized));
+    }
+
+    #[tokio::test]
+    async fn test_create_normalizes_path_prefix_missing_trailing_slash() {
+        let (_pool, store, user_id) = setup_test_db().await;
+        let (row, _plaintext) = store.create(user_id, "Device", 0, Some("/sync")).await.unwrap();
+        assert_eq!(row.path_prefix.as_deref(), Some("/sync/"));
+    }
+
+    #[tokio::test]
+    async fn test_create_rejects_invalid_path_prefix() {
+        let (_pool, store, user_id) = setup_test_db().await;
+        let result = store.create(user_id, "Device", 0, Some("sync")).await;
+        assert!(matches!(result, Err(ApiTokenDbError::InvalidPathPrefix(_))));
     }
 
     #[tokio::test]

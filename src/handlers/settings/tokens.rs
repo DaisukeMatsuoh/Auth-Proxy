@@ -11,7 +11,8 @@ use axum::{
 use serde::Deserialize;
 use crate::AppState;
 use crate::middleware::AuthUser;
-use crate::handlers::api_tokens::{require_session_auth, validate_path_prefix};
+use crate::api_tokens_db::ApiTokenDbError;
+use crate::handlers::api_tokens::require_session_auth;
 
 const PAGE_STYLE: &str = r#"
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -144,19 +145,21 @@ pub async fn create(
         return Redirect::to("/settings/security/tokens").into_response();
     }
 
-    let path_prefix = match validate_path_prefix(Some(&form.path_prefix)) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
-
     let ttl_days = state.config.api_token_default_ttl_days;
     let (_row, plaintext) = match state
         .api_tokens
-        .create(auth_user.id, name, ttl_days, path_prefix.as_deref())
+        .create(auth_user.id, name, ttl_days, Some(&form.path_prefix))
         .await
     {
         Ok(v) => v,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(ApiTokenDbError::InvalidPathPrefix(msg)) => {
+            let body = format!(
+                r#"<h1>エラー</h1><p>{}</p><a href="/settings/security/tokens" class="inline-block">戻る</a>"#,
+                html_escape::encode_text(&msg)
+            );
+            return Html(page("エラー", &body)).into_response();
+        }
+        Err(ApiTokenDbError::DbError(_)) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
     // The plaintext token is never stored and can never be shown again, so it

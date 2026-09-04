@@ -40,7 +40,15 @@ pub async fn proxy_handler(
         let rel = if rel.is_empty() { "index.html" } else { rel };
 
         let request_path = PathBuf::from(rel);
-        // Prevent directory traversal
+        // Prevent directory traversal. This is a filesystem-path check, not
+        // a URL-scope check: it is intentionally simpler than
+        // `middleware::auth::contains_dot_dot_segment` (no percent-decoding)
+        // because `tokio::fs::read` never decodes percent-encoding either --
+        // a segment literally named "%2e%2e" cannot resolve to a real ".."
+        // directory on disk. Do not "simplify" this by sharing the
+        // percent-decoding check with the API-token path-scope logic: they
+        // guard different sinks (a filesystem path vs. a re-parsed URL) and
+        // are not interchangeable.
         if !request_path.components().any(|c| c.as_os_str() == "..") {
             let full_path = serve_path.join(&request_path);
             if full_path.is_file() {

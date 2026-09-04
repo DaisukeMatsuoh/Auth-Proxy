@@ -46,15 +46,18 @@ fn sanitize_header_value(s: &str) -> String {
     s.chars().filter(|c| !c.is_control()).collect()
 }
 
-/// RFC 6750-flavored 403 for a token restricted to a path scope it doesn't
-/// cover (Phase API-3, R7). Distinct from `invalid_token_response`: the
-/// token itself is valid, it just isn't allowed to reach this path.
-fn insufficient_scope_response() -> Response {
+/// Shared RFC 6750-style 403 for any "this token is valid but not permitted
+/// to do that" case. Distinct from `invalid_token_response`: the token
+/// itself is valid, it just isn't authorized for this particular request.
+/// Both the path-scope check below and `handlers::api_tokens::require_session_auth`
+/// use this, so the emitted error shape only needs to be kept consistent
+/// in one place.
+pub(crate) fn insufficient_scope_response(description: &str) -> Response {
     (
         StatusCode::FORBIDDEN,
         Json(json!({
             "error": "insufficient_scope",
-            "error_description": "This token is not permitted to access this path"
+            "error_description": description
         })),
     )
         .into_response()
@@ -121,15 +124,21 @@ pub async fn auth_middleware(
                     // fetching the user so a scoped-out request costs one
                     // fewer DB round trip.
                     //
-                    // The dot-segment check must run first: a raw prefix
-                    // match on an un-normalized path can be fooled by
-                    // `..` (or `%2e%2e`) segments that a downstream URL
-                    // parser (reqwest, when forwarding to the upstream)
-                    // will collapse into a different, out-of-scope path.
+                    // Both conditions are required for correctness (a raw
+                    // prefix match alone can be fooled by `..`/`%2e%2e`/`\`
+                    // segments that a downstream URL parser, e.g. reqwest
+                    // when forwarding to the upstream, would collapse into
+                    // a different, out-of-scope path) -- but `starts_with`
+                    // is checked first since it's cheap and already false
+                    // for the common case of a request outside the token's
+                    // scope, letting most rejections skip the percent-decode
+                    // work in `contains_dot_dot_segment` entirely.
                     if let Some(prefix) = &token_row.path_prefix {
                         let path = req.uri().path();
-                        if contains_dot_dot_segment(path) || !path.starts_with(prefix.as_str()) {
-                            return insufficient_scope_response();
+                        if !path.starts_with(prefix.as_str()) || contains_dot_dot_segment(path) {
+                            return insufficient_scope_response(
+                                "This token is not permitted to access this path",
+                            );
                         }
                     }
 
@@ -137,9 +146,17 @@ pub async fn auth_middleware(
                         return invalid_token_response();
                     };
 
-                    // Best-effort, throttled bookkeeping; must never affect
-                    // the auth decision itself.
-                    let _ = state.api_tokens.touch_last_used(token_row.id).await;
+                    // Fire-and-forget: throttled bookkeeping that must never
+                    // block or affect the auth decision. Spawned rather than
+                    // awaited so a slow/contended SQLite write never adds
+                    // latency to the request itself.
+                    {
+                        let api_tokens = state.api_tokens.clone();
+                        let token_id = token_row.id;
+                        tokio::spawn(async move {
+                            let _ = api_tokens.touch_last_used(token_id).await;
+                        });
+                    }
 
                     let safe_token_name = sanitize_header_value(&token_row.name);
 

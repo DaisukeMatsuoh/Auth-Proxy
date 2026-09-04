@@ -114,3 +114,34 @@ WHATWG URL仕様の挙動を見落としていた。`/sync/..\admin` のよう�
 認識する9パターン（`..`、および `.`・`%2e`・`%2E` の組み合わせ）と本実装の判定が完全に一致すること、
 連続スラッシュの畳み込みや他の特殊文字の扱いが無いこと、`axum`/`http`側でパスが事前に正規化されて
 いないことを、独立したレビューで個別に検証済み。
+
+## 追記（2026-09-04・2回目）: `/code-review` で検出したクリーンアップ6件への対応
+
+上記のドットセグメント修正後、`/code-review` skill でコード品質観点のレビューを実施し、
+以下6件（いずれもセキュリティ脆弱性ではなく保守性・効率性の指摘）に対応した。
+
+1. **`path_prefix` にセグメント境界の保証が無かった**: `"/sync"`(末尾スラッシュ無し)で発行すると
+   `starts_with`により`/synchronize-logs`等の無関係な兄弟パスにもマッチしてしまう問題。
+   `validate_path_prefix`で末尾スラッシュを自動補完するよう修正(`src/api_tokens_db.rs`)。
+2. **検証ロジックが`ApiTokenStoreDb::create`ではなく2つのHTTPハンドラー側にのみ存在していた**:
+   将来CLI(R9)等が`create()`を直接呼んだ場合に検証が漏れる設計だった。
+   `validate_path_prefix`を`api_tokens_db.rs`に移設し、`create()`内部で必ず呼ぶように変更。
+   `ApiTokenDbError::InvalidPathPrefix`を追加し、呼び出し元(JSON API・Web UI)はこれを
+   400エラー/エラーページに変換するだけにした。
+3. **3箇所の独立した「`..`拒否」実装が、ADRの記述に反して実質的に等価ではなかった**:
+   `handlers/proxy.rs`・`handlers/static_files.rs`(パーセントデコード無し、ファイルシステム
+   パス用)と`middleware/auth.rs::contains_dot_dot_segment`(パーセントデコードあり、
+   再パースされるURL用)は異なる脅威に対する別々の対策であり、統合できない。将来の誤った
+   「簡略化」を防ぐため、3箇所すべてに相互参照するコメントを追加。
+4. **効率性**: スコープチェックの条件式`contains_dot_dot_segment(path) || !path.starts_with(prefix)`
+   の評価順序を`!path.starts_with(prefix) || contains_dot_dot_segment(path)`に入れ替え、
+   安全性は同一のまま、スコープ外アクセスの多くのケースでパーセントデコードのコストを回避。
+5. **`insufficient_scope`のJSONエラーボディを2箇所(`middleware/auth.rs`・
+   `handlers/api_tokens.rs::require_session_auth`)で個別に組み立てていた**: 説明文を引数に
+   取る共有関数`insufficient_scope_response(description: &str)`に統合。
+6. **`touch_last_used`の書き込みがリクエストのクリティカルパス上で`await`されていた**:
+   結果を破棄するだけの処理なので`tokio::spawn`によるfire-and-forgetに変更し、
+   SQLite書き込みの完了を待たずにレスポンスを返せるようにした。
+
+いずれも`cargo test`(108件)で回帰が無いことを確認済み。境界値の修正(1)については
+`/synchronize-logs`が拒否されることを実サーバーでも確認した。

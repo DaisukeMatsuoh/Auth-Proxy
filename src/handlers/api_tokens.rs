@@ -6,6 +6,8 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use crate::AppState;
+use crate::api_tokens_db::ApiTokenDbError;
+use crate::middleware::auth::insufficient_scope_response;
 use crate::middleware::AuthUser;
 
 /// Reject requests authenticated via API token. Token issuance/revocation
@@ -14,40 +16,11 @@ use crate::middleware::AuthUser;
 /// leaked token.
 pub(crate) fn require_session_auth(auth_user: &AuthUser) -> Result<(), Response> {
     if auth_user.auth_method != "session" {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({
-                "error": "insufficient_scope",
-                "error_description": "Token issuance and management require session authentication"
-            })),
-        )
-            .into_response());
+        return Err(insufficient_scope_response(
+            "Token issuance and management require session authentication",
+        ));
     }
     Ok(())
-}
-
-/// Normalize and validate an optional path-scope prefix (Phase API-3, R7).
-/// Blank input means "no restriction" (`None`). A non-empty prefix must
-/// start with `/`, otherwise it could never match a request path
-/// (`req.uri().path()` always starts with `/`) and the token would be
-/// silently unusable.
-pub(crate) fn validate_path_prefix(raw: Option<&str>) -> Result<Option<String>, Response> {
-    let Some(raw) = raw else { return Ok(None) };
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    if !trimmed.starts_with('/') {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "invalid_request",
-                "error_description": "path_prefix must start with '/'"
-            })),
-        )
-            .into_response());
-    }
-    Ok(Some(trimmed.to_string()))
 }
 
 #[derive(Serialize)]
@@ -130,15 +103,10 @@ pub async fn create_token(
             .into_response();
     }
 
-    let path_prefix = match validate_path_prefix(body.path_prefix.as_deref()) {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
-
     let ttl_days = state.config.api_token_default_ttl_days;
     match state
         .api_tokens
-        .create(auth_user.id, &body.name, ttl_days, path_prefix.as_deref())
+        .create(auth_user.id, &body.name, ttl_days, body.path_prefix.as_deref())
         .await
     {
         Ok((row, plaintext)) => (
@@ -151,7 +119,15 @@ pub async fn create_token(
             }),
         )
             .into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(ApiTokenDbError::InvalidPathPrefix(msg)) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_request",
+                "error_description": msg
+            })),
+        )
+            .into_response(),
+        Err(ApiTokenDbError::DbError(_)) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
@@ -208,26 +184,6 @@ mod tests {
     #[test]
     fn test_require_session_auth_rejects_token() {
         assert!(require_session_auth(&token_user()).is_err());
-    }
-
-    #[test]
-    fn test_validate_path_prefix_none_or_blank_means_no_restriction() {
-        assert_eq!(validate_path_prefix(None).unwrap(), None);
-        assert_eq!(validate_path_prefix(Some("")).unwrap(), None);
-        assert_eq!(validate_path_prefix(Some("   ")).unwrap(), None);
-    }
-
-    #[test]
-    fn test_validate_path_prefix_accepts_leading_slash() {
-        assert_eq!(validate_path_prefix(Some("/sync/")).unwrap(), Some("/sync/".to_string()));
-        assert_eq!(validate_path_prefix(Some("  /sync/  ")).unwrap(), Some("/sync/".to_string()));
-    }
-
-    #[test]
-    fn test_validate_path_prefix_rejects_missing_leading_slash() {
-        // Without a leading slash, req.uri().path() (always "/...") could
-        // never match, silently locking the token out of everything.
-        assert!(validate_path_prefix(Some("sync/")).is_err());
     }
 
     #[tokio::test]
