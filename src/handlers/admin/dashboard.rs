@@ -77,6 +77,7 @@ pub async fn get_dashboard(
         <nav>
             <a href="/admin/users">User Management</a>
             <a href="/admin/users/new">Add User</a>
+            <a href="/admin/tokens">API Tokens</a>
         </nav>
         <div class="user-info">
             Logged in as: <strong>{}</strong> | <a href="/logout">Logout</a>

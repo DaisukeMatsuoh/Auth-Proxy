@@ -178,6 +178,32 @@ http:
           - url: "http://127.0.0.1:8080"
 ```
 
+### Rate Limiting
+
+auth-proxy does not implement request rate limiting itself (see ADR 0003 in `docs/note/decisions/`
+for why: API tokens are 256-bit random values, so brute-forcing one is computationally infeasible
+regardless of rate limiting, and generic request-volume protection is Traefik's job, not an
+authentication proxy's). If you want to limit request volume — e.g. to protect `/login` against
+password-guessing, or just as general abuse protection — configure it in Traefik:
+
+```yaml
+http:
+  middlewares:
+    auth-proxy-ratelimit:
+      rateLimit:
+        average: 100
+        burst: 50
+  routers:
+    my-docs:
+      rule: "Host(`docs.example.com`)"
+      entryPoints:
+        - websecure
+      tls: {}
+      middlewares:
+        - auth-proxy-ratelimit
+      service: auth-proxy-svc
+```
+
 ---
 
 ## Deploy: Proxy Mode (Docker)
@@ -342,7 +368,7 @@ Edit `docker-compose.yml` and replace the `app` service with your own. **Do not 
 services:
   auth-proxy:
     # Uncomment exactly one of the following:
-    image: ghcr.io/DaisukeMatsuoh/auth-proxy:latest    # [Recommended] use the published image
+    image: ghcr.io/daisukematsuoh/auth-proxy:latest    # [Recommended] use the published image
     # build: .                                     # [Development] build locally
     ports:
       # ${AUTH_PROXY_HOST_PORT}: host-side port (from .env)
@@ -636,6 +662,9 @@ RUST_LOG=info
 | `hash` | Generate an Argon2id hash of a password |
 | `verify <username>` | Verify a user's password (for debugging) |
 | `list` | List all registered users |
+| `token list [--user <username>]` | List API tokens (all users, or one user) |
+| `token revoke <id>` | Revoke an API token by id, regardless of owner |
+| `token create --user <username> --name <name> [--path-prefix </sync/>]` | Issue a new API token; prints the plaintext token once |
 
 ### Static File Mode (Single Binary)
 
@@ -646,7 +675,15 @@ auth-proxy init-admin
 auth-proxy list
 auth-proxy verify alice
 auth-proxy hash
+auth-proxy token create --user alice --name "CI deploy" --path-prefix /sync/
+auth-proxy token list
+auth-proxy token revoke 3
 ```
+
+> **CI usage note**: `token create` prints the plaintext token to stdout exactly once (it can never
+> be retrieved again). If you run this command from a CI pipeline, make sure the pipeline's log
+> output is masked/redacted for this step — otherwise the token ends up stored in plaintext in the
+> CI system's logs, which may be a weaker security boundary than the CI secret store itself.
 
 ### Proxy Mode (Docker)
 
@@ -657,6 +694,7 @@ Use `docker compose exec` or `docker compose run` to run commands inside the con
 docker compose exec auth-proxy auth-proxy list
 docker compose exec auth-proxy auth-proxy verify alice
 docker compose exec auth-proxy auth-proxy hash
+docker compose exec auth-proxy auth-proxy token create --user alice --name "CI deploy"
 
 # Commands to run before starting the server, in a temporary container (run)
 # init-admin is typically run before first startup

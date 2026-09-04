@@ -188,6 +188,58 @@ impl ApiTokenStoreDb {
         .await?;
         Ok(result.rows_affected() > 0)
     }
+
+    /// List every token for every user, with the owner's username attached.
+    /// Phase API-4 (R10): admin-only visibility. There is no per-user
+    /// scoping here by design -- callers MUST enforce the admin+session
+    /// check themselves (see `handlers/admin/tokens.rs`) before calling this.
+    pub async fn list_all(&self) -> Result<Vec<ApiTokenWithOwner>, ApiTokenDbError> {
+        let rows = sqlx::query_as::<_, ApiTokenWithOwner>(
+            "SELECT api_tokens.id, api_tokens.user_id, users.username,
+                    api_tokens.name, api_tokens.path_prefix, api_tokens.expires_at,
+                    api_tokens.last_used_at, api_tokens.revoked_at, api_tokens.created_at
+             FROM api_tokens
+             JOIN users ON users.id = api_tokens.user_id
+             ORDER BY api_tokens.created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Revoke any token by id, regardless of owner.
+    ///
+    /// Unlike `revoke`, this performs NO ownership check at all (Phase
+    /// API-4, R10, ADR 0003) -- it exists solely for admin-panel use, where
+    /// the caller has already been gated by the same
+    /// `role == "admin" && auth_method == "session"` check used by every
+    /// other `/admin/*` handler. Calling this from anywhere else would let
+    /// a user revoke another user's token: a privilege-escalation bug of
+    /// the exact shape found and fixed in Phase API-1 for `/admin/*`
+    /// itself. Do not call this outside `handlers/admin/`.
+    pub async fn revoke_any(&self, id: i64) -> Result<bool, ApiTokenDbError> {
+        let result = sqlx::query(
+            "UPDATE api_tokens SET revoked_at = datetime('now')
+             WHERE id = ? AND revoked_at IS NULL",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ApiTokenWithOwner {
+    pub id: i64,
+    pub user_id: i64,
+    pub username: String,
+    pub name: String,
+    pub path_prefix: Option<String>,
+    pub expires_at: Option<String>,
+    pub last_used_at: Option<String>,
+    pub revoked_at: Option<String>,
+    pub created_at: String,
 }
 
 #[cfg(test)]
@@ -373,5 +425,56 @@ mod tests {
 
         let updated = store.list_for_user(user_id).await.unwrap();
         assert!(updated[0].last_used_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_list_all_includes_every_users_tokens_with_username() {
+        let (pool, store, user_id) = setup_test_db().await;
+        let test_hash = "$argon2id$v=19$m=19456,t=2,p=1$eW9vdGlzcGFzcw$VT2kfB6K4/HQp9YC8K7ZhFXxe7viFVzTwFNXnSg7vj0";
+        sqlx::query("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)")
+            .bind("bob")
+            .bind(test_hash)
+            .bind("user")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        store.create(user_id, "Alice's token", 0, None).await.unwrap();
+        store.create(2, "Bob's token", 0, None).await.unwrap();
+
+        let all = store.list_all().await.unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().any(|t| t.username == "alice" && t.name == "Alice's token"));
+        assert!(all.iter().any(|t| t.username == "bob" && t.name == "Bob's token"));
+    }
+
+    /// ★ Regression test for the ADR 0003 privilege-escalation guardrail:
+    /// `revoke_any` must revoke a token regardless of owner (that's the
+    /// whole point of the admin-only function), unlike `revoke`.
+    #[tokio::test]
+    async fn test_revoke_any_ignores_ownership() {
+        let (pool, store, user_id) = setup_test_db().await;
+        let test_hash = "$argon2id$v=19$m=19456,t=2,p=1$eW9vdGlzcGFzcw$VT2kfB6K4/HQp9YC8K7ZhFXxe7viFVzTwFNXnSg7vj0";
+        sqlx::query("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)")
+            .bind("bob")
+            .bind(test_hash)
+            .bind("user")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (row, plaintext) = store.create(user_id, "Alice's token", 0, None).await.unwrap();
+
+        // admin (not alice) revokes it via revoke_any -- must succeed.
+        assert!(store.revoke_any(row.id).await.unwrap());
+
+        let hash = ApiTokenStoreDb::hash_token(&plaintext);
+        assert!(store.verify(&hash).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_revoke_any_unknown_id_returns_false() {
+        let (_pool, store, _user_id) = setup_test_db().await;
+        assert!(!store.revoke_any(99999).await.unwrap());
     }
 }

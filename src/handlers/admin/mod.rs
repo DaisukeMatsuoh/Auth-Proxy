@@ -1,6 +1,7 @@
 // Admin handlers
 pub mod dashboard;
 pub mod users;
+pub mod tokens;
 
 pub use dashboard::get_dashboard;
 pub use users::{
@@ -13,3 +14,4 @@ pub use users::{
     show_disable_mfa,
     handle_disable_mfa,
 };
+pub use tokens::{get_admin_tokens, post_admin_token_revoke};

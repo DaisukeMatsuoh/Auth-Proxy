@@ -4,9 +4,10 @@
 **関連ADR**: [`decisions/0001-api-token-bearer-auth.md`](decisions/0001-api-token-bearer-auth.md)
 **作成日**: 2026-09-03
 **対象ブランチ**: `dev`
-**ステータス**: Phase API-1・API-2 実装済み・マージ済み。Phase API-3はR7(パススコープ制限)のみ
-実装済み。R6(ペアリングコード)は[ADR 0002](decisions/0002-path-scope-accepted-pairing-code-rejected.md)
-により不採用。
+**ステータス**: Phase API-1・API-2・API-3(R7のみ)実装済み・マージ済み。
+Phase API-4もR9(CLI)・R10(管理画面でのトークン可視化)を実装済み。R6・R8は不採用
+([ADR 0002](decisions/0002-path-scope-accepted-pairing-code-rejected.md)、
+[ADR 0003](decisions/0003-cli-and-admin-token-visibility-rate-limit-to-traefik.md))。
 
 このドキュメントは、提案書の Phase API-1（R1・R2・R3・R5 = Bearer トークン認証の中核）を
 実装するための具体的な手順書である。R4（Web UI）以降は別フェーズ・別runbookとする（後述）。
@@ -69,7 +70,7 @@ CLAUDE.md のアーキテクチャ表を鵜呑みにしないこと。
 | **Phase API-1** | R1（Bearerミドルウェア）+ R2（`api_tokens`テーブル）+ R3（401 JSON応答）+ R5（`X-Auth-Method`） | **✅ 対象** |
 | Phase API-2 | R4（トークン発行・失効のWeb UI、`/me/tokens`） | ❌ 別runbookで実施 |
 | Phase API-3 | R7（パススコープ制限）のみ実装。**R6（ペアリングコード）は不採用**（[ADR 0002](decisions/0002-path-scope-accepted-pairing-code-rejected.md)） | ✅ 対象 |
-| Phase API-4 | R8（レート制限）+ R9（CLI）+ R10（管理画面） | ❌ 未着手・要ADR |
+| Phase API-4 | R9（CLI）+ R10（管理画面） | ✅ 対象(R8は不採用、[ADR 0003](decisions/0003-cli-and-admin-token-visibility-rate-limit-to-traefik.md)) |
 
 Phase API-1 が完了すると、`api_tokens` テーブルへの直接 INSERT でトークンを払い出し、
 Bearer 認証で上流にアクセスできるようになる（timetrack 側のブロッカー解消条件、提案書 §10 参照）。

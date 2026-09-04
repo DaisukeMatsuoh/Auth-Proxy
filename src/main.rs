@@ -25,6 +25,40 @@ enum Cli {
 
     /// List registered usernames
     List,
+
+    /// Manage API tokens (Phase API-4)
+    Token {
+        #[command(subcommand)]
+        action: TokenAction,
+    },
+}
+
+#[derive(Parser, Debug)]
+enum TokenAction {
+    /// List API tokens (all users, or one user with --user)
+    List {
+        #[arg(long)]
+        user: Option<String>,
+    },
+
+    /// Revoke an API token by id, regardless of owner
+    Revoke {
+        /// Token id (see `token list`)
+        id: i64,
+    },
+
+    /// Issue a new API token for a user. Prints the plaintext token once.
+    Create {
+        #[arg(long)]
+        user: String,
+
+        #[arg(long)]
+        name: String,
+
+        /// Optional path-scope prefix, e.g. /sync/ (default: full access)
+        #[arg(long = "path-prefix")]
+        path_prefix: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -56,6 +90,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cli::List => {
             cli::handle_list().await?;
         }
+        Cli::Token { action } => match action {
+            TokenAction::List { user } => {
+                cli::handle_token_list(user).await?;
+            }
+            TokenAction::Revoke { id } => {
+                cli::handle_token_revoke(id).await?;
+            }
+            TokenAction::Create { user, name, path_prefix } => {
+                cli::handle_token_create(user, name, path_prefix).await?;
+            }
+        },
     }
 
     Ok(())

@@ -118,6 +118,7 @@ There is currently no guest-token resolution step in this flow — see "Guest To
 | Phase API-1 | Bearer API token authentication for non-browser clients (`api_tokens` table, `X-Auth-Method`/`X-Auth-Token-Name` headers, RFC 6750-style 401 JSON errors, opt-in via `AUTH_PROXY_API_TOKEN_ENABLED`). See `docs/note/api-token-auth-runbook.md` and `docs/note/decisions/0001-api-token-bearer-auth.md` |
 | Phase API-2 | Web UI for issuing/revoking API tokens: `GET /me/tokens` → `/settings/security/tokens` (list, issue, revoke), linked from `/settings/security`. Session auth only, same `auth_method == "session"` guard as the Phase API-1 JSON API |
 | Phase API-3 | Path-scope restriction for API tokens (R7 only — R6 "pairing codes" was evaluated and explicitly rejected, see [ADR 0002](docs/note/decisions/0002-path-scope-accepted-pairing-code-rejected.md)). A token issued with `path_prefix` can only reach request paths starting with that prefix; `auth_middleware` returns `403 insufficient_scope` otherwise. `path_prefix == NULL` (default) keeps full access, unchanged from Phase API-1 |
+| Phase API-4 | CLI (R9: `auth-proxy token list/revoke/create`) and admin-wide token visibility (R10: `GET /admin/tokens`, revoke any user's token). R8 (rate limiting) was evaluated and explicitly rejected as an auth-proxy feature — see [ADR 0003](docs/note/decisions/0003-cli-and-admin-token-visibility-rate-limit-to-traefik.md) |
 
 **Phase 4 ("Guest tokens") is NOT implemented**, despite being listed as done in older versions of this file. See "Guest Tokens — Not Yet Implemented" below.
 
@@ -187,6 +188,12 @@ In `auth_middleware`, the scope check happens right after `ApiTokenStoreDb::veri
 
 **`/admin/*` requires session authentication, not just `role == "admin"`.**  
 Every handler in `src/handlers/admin/` checks `auth_user.role != "admin" || auth_user.auth_method != "session"`. API tokens carry the owner's real `role`, so without the `auth_method` check, a leaked API token belonging to an admin would grant full admin-panel access (create admins, reset any password, delete users) even though the token was only ever meant to authenticate calls to the proxied upstream app. This was found and fixed via security review — see `docs/note/decisions/0001-api-token-bearer-auth.md`.
+
+**`ApiTokenStoreDb::revoke_any` must only ever be called from `src/handlers/admin/` (Phase API-4, R10).**  
+Unlike `revoke` (which requires a matching `user_id`), `revoke_any` performs no ownership check — that's the point, since an admin must be able to revoke any user's token. It is safe only because its sole caller (`handlers/admin/tokens.rs::post_admin_token_revoke`) is gated by the same `role == "admin" && auth_method == "session"` check as every other admin handler. Calling it from anywhere else would let a user revoke another user's token. See ADR 0003.
+
+**Rate limiting is not implemented in auth-proxy; it is delegated to Traefik (Phase API-4, ADR 0003, R8 rejected).**  
+API tokens are 256-bit random values, so brute-forcing a valid token is computationally infeasible regardless of rate limiting — adding a limiter to auth-proxy would not address that threat model. Generic request-volume protection belongs at the reverse-proxy layer (Traefik's rate-limit middleware), consistent with auth-proxy's existing design philosophy of delegating routing/edge concerns. Do not add an in-process rate limiter to "fix" this without a new ADR that identifies a concrete threat a Traefik-level limiter can't address.
 
 ---
 
