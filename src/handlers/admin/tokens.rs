@@ -23,7 +23,17 @@ pub async fn get_admin_tokens(
             .into_response();
     }
 
-    let tokens = state.api_tokens.list_all().await.unwrap_or_default();
+    let tokens = match state.api_tokens.list_all().await {
+        Ok(tokens) => tokens,
+        Err(e) => {
+            tracing::error!("failed to list all API tokens: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<h1>500 Internal Server Error</h1>".to_string()),
+            )
+                .into_response();
+        }
+    };
 
     let rows = if tokens.is_empty() {
         r#"<tr><td colspan="6" style="text-align:center;color:#9ca3af;">トークンはまだ発行されていません</td></tr>"#.to_string()
@@ -32,26 +42,27 @@ pub async fn get_admin_tokens(
             .iter()
             .map(|t| {
                 let username = html_escape::encode_text(&t.username);
-                let name = html_escape::encode_text(&t.name);
+                let name = html_escape::encode_text(&t.token.name);
                 let scope = t
+                    .token
                     .path_prefix
                     .as_deref()
                     .map(|p| format!("<code>{}</code>", html_escape::encode_text(p)))
                     .unwrap_or_else(|| r#"<span style="color:#9ca3af;">全パス</span>"#.to_string());
-                let last_used = t.last_used_at.as_deref().unwrap_or("未使用");
-                let action = if t.revoked_at.is_some() {
+                let last_used = t.token.last_used_at.as_deref().unwrap_or("未使用");
+                let action = if t.token.revoked_at.is_some() {
                     r#"<span style="color:#9ca3af;">失効済み</span>"#.to_string()
                 } else {
                     format!(
                         r#"<form method="POST" action="/admin/tokens/{}/revoke" style="display:inline;" onsubmit="return confirm('このトークンを失効させますか?この操作は取り消せません。');">
                             <button type="submit" style="background:#dc2626;">失効</button>
                         </form>"#,
-                        t.id
+                        t.token.id
                     )
                 };
                 format!(
                     "<tr><td>{username}</td><td>{name}</td><td>{scope}</td><td>{last_used}</td><td>{}</td><td>{action}</td></tr>",
-                    t.created_at
+                    t.token.created_at
                 )
             })
             .collect::<Vec<_>>()
@@ -136,8 +147,22 @@ pub async fn post_admin_token_revoke(
             .into_response();
     }
 
-    let _ = state.api_tokens.revoke_any(id).await;
-    Redirect::to("/admin/tokens").into_response()
+    match state.api_tokens.revoke_any(id).await {
+        Ok(true) => Redirect::to("/admin/tokens").into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Html("<h1>404 Not Found</h1><p>指定されたトークンが見つからないか、既に失効しています。</p>".to_string()),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("failed to revoke token {id}: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<h1>500 Internal Server Error</h1>".to_string()),
+            )
+                .into_response()
+        }
+    }
 }
 
 #[cfg(test)]

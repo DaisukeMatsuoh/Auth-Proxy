@@ -70,6 +70,11 @@ auth-proxy token create --user <username> --name <name> [--path-prefix </sync/>]
   (コード側だけでは解決できない運用上の注意点のため)。
 - `--user`は既存ユーザー名を指定する形とし、CLI操作でユーザーを自動作成したりはしない
   (責務を混在させない)。
+- `token revoke <id>`はCLIに「操作しているのは誰か」という概念(HTTP側の`auth_method`や
+  セッションの持ち主)が存在しないため、`ApiTokenStoreDb::revoke`(所有者チェックあり)ではなく
+  決定3で新設する`revoke_any`(所有者チェックなし)を使う。つまり`revoke_any`の信頼できる
+  呼び出し元はadmin専用ガード付きHTTPハンドラーだけでなく、このCLIコマンドも含む2箇所になる
+  (決定3を参照)。
 
 ## 決定3: R10(管理画面でのトークン可視化)を実装する。スコープは「トークンの一覧・失効」のみに限定する
 
@@ -91,9 +96,12 @@ auth-proxy token create --user <username> --name <name> [--path-prefix </sync/>]
 - `POST /admin/tokens/{id}/revoke`: 任意のユーザーのトークンを失効。
 - **`ApiTokenStoreDb::revoke`は所有者チェック(`user_id`一致)を必須としているため流用できない。
   新規に`revoke_any(id) -> Result<bool, ApiTokenDbError>`を追加し、所有者チェックを行わない。**
-  この関数は上記のadmin専用ガード付きハンドラーからのみ呼び出すこと。他のハンドラーから
-  誤って呼ばれると、ユーザーが他人のトークンを失効できてしまう権限昇格になるため、
-  呼び出し箇所は`src/handlers/admin/`配下に限定する。
+  この関数は「所有者に関わらず失効させてよい」と判断できる信頼境界からのみ呼び出すこと。
+  具体的には (a) admin専用ガード付きHTTPハンドラー(`src/handlers/admin/`配下、
+  `role == "admin" && auth_method == "session"`チェック済み)、(b) CLI(`src/cli/token.rs`、
+  決定2)の2箇所のみを信頼できる呼び出し元とする。他のHTTPハンドラーから誤って呼ばれると、
+  ユーザーが他人のトークンを失効できてしまう権限昇格になるため、HTTPハンドラーからの
+  呼び出しはadmin専用ガード付きのものに限定する。
 - `/admin`ダッシュボードに「APIトークン管理」へのリンクを追加する。
 
 ---
@@ -106,9 +114,9 @@ auth-proxy token create --user <username> --name <name> [--path-prefix </sync/>]
 - R8を実装しないことで、auth-proxy本体のコード量・状態管理・テスト対象を増やさずに済む。
 
 ### 悪い影響・リスク
-- `revoke_any`という「所有者チェックなしの失効」関数を新設するため、**呼び出し箇所を
-  admin専用ガード付きハンドラーに限定する**という運用規律が今後も守られる必要がある
-  (CLAUDE.mdに不変条件として明記する)。
+- `revoke_any`という「所有者チェックなしの失効」関数を新設するため、**信頼できる呼び出し元を
+  admin専用ガード付きHTTPハンドラーとCLI(決定2)の2箇所に限定する**という運用規律が
+  今後も守られる必要がある(CLAUDE.mdに不変条件として明記する)。
 - Traefikへの委譲(決定1)は、Traefikを使わないデプロイ構成(単一バイナリ・systemd運用等)
   では効かない。その場合の代替手段が必要になれば、その時点で別途検討する。
 

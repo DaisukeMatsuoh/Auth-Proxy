@@ -190,9 +190,13 @@ impl ApiTokenStoreDb {
     }
 
     /// List every token for every user, with the owner's username attached.
-    /// Phase API-4 (R10): admin-only visibility. There is no per-user
-    /// scoping here by design -- callers MUST enforce the admin+session
-    /// check themselves (see `handlers/admin/tokens.rs`) before calling this.
+    /// Phase API-4 (R10): full visibility, no per-user scoping by design.
+    ///
+    /// Trusted callers only: either (a) an admin+session-gated HTTP handler
+    /// under `handlers/admin/` (see `handlers/admin/tokens.rs`), or (b) a
+    /// CLI command under `src/cli/` (see `cli/token.rs`), whose trust
+    /// boundary is OS/shell access rather than `auth_method`. Never call
+    /// this from a handler reachable by a non-admin authenticated user.
     pub async fn list_all(&self) -> Result<Vec<ApiTokenWithOwner>, ApiTokenDbError> {
         let rows = sqlx::query_as::<_, ApiTokenWithOwner>(
             "SELECT api_tokens.id, api_tokens.user_id, users.username,
@@ -210,13 +214,15 @@ impl ApiTokenStoreDb {
     /// Revoke any token by id, regardless of owner.
     ///
     /// Unlike `revoke`, this performs NO ownership check at all (Phase
-    /// API-4, R10, ADR 0003) -- it exists solely for admin-panel use, where
-    /// the caller has already been gated by the same
-    /// `role == "admin" && auth_method == "session"` check used by every
-    /// other `/admin/*` handler. Calling this from anywhere else would let
+    /// API-4, R10, ADR 0003).
+    ///
+    /// Trusted callers only: either (a) an admin+session-gated HTTP handler
+    /// under `handlers/admin/` (see `handlers/admin/tokens.rs`), or (b) a
+    /// CLI command under `src/cli/` (see `cli/token.rs`), whose trust
+    /// boundary is OS/shell access rather than `auth_method`. Calling this
+    /// from a handler reachable by a non-admin authenticated user would let
     /// a user revoke another user's token: a privilege-escalation bug of
-    /// the exact shape found and fixed in Phase API-1 for `/admin/*`
-    /// itself. Do not call this outside `handlers/admin/`.
+    /// the exact shape found and fixed in Phase API-1 for `/admin/*` itself.
     pub async fn revoke_any(&self, id: i64) -> Result<bool, ApiTokenDbError> {
         let result = sqlx::query(
             "UPDATE api_tokens SET revoked_at = datetime('now')
@@ -229,17 +235,16 @@ impl ApiTokenStoreDb {
     }
 }
 
+/// A token row plus its owner's username. Composes `ApiTokenRow` via
+/// `#[sqlx(flatten)]` rather than duplicating its fields, so a future
+/// column added to `api_tokens` (and thus to `ApiTokenRow`) automatically
+/// appears here too instead of silently diverging between the per-user
+/// view (`ApiTokenRow`) and the admin-wide view (this type).
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ApiTokenWithOwner {
-    pub id: i64,
-    pub user_id: i64,
     pub username: String,
-    pub name: String,
-    pub path_prefix: Option<String>,
-    pub expires_at: Option<String>,
-    pub last_used_at: Option<String>,
-    pub revoked_at: Option<String>,
-    pub created_at: String,
+    #[sqlx(flatten)]
+    pub token: ApiTokenRow,
 }
 
 #[cfg(test)]
@@ -444,8 +449,8 @@ mod tests {
 
         let all = store.list_all().await.unwrap();
         assert_eq!(all.len(), 2);
-        assert!(all.iter().any(|t| t.username == "alice" && t.name == "Alice's token"));
-        assert!(all.iter().any(|t| t.username == "bob" && t.name == "Bob's token"));
+        assert!(all.iter().any(|t| t.username == "alice" && t.token.name == "Alice's token"));
+        assert!(all.iter().any(|t| t.username == "bob" && t.token.name == "Bob's token"));
     }
 
     /// ★ Regression test for the ADR 0003 privilege-escalation guardrail:

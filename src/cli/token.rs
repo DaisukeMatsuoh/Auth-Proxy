@@ -5,62 +5,81 @@
 // never takes one in as input, so there is no secret-in-argv/shell-history
 // exposure on this side. The printed plaintext is a one-time display, same
 // contract as the Web UI (Phase API-2) and JSON API (Phase API-1).
+//
+// Every failure path here returns `Err(...)` rather than printing to
+// stderr and returning `Ok(())`. This CLI exists specifically to be driven
+// by scripts/CI (see ADR 0003, R9) checking the process exit code; a
+// silent `Ok(())` on "no such user" or "no active token with that id"
+// would make automation believe an operation succeeded when it did not.
 
 use crate::config::Config;
 use crate::state::AppState;
 use std::sync::Arc;
 
-pub async fn handle_token_list(username: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+async fn build_state() -> Result<AppState, Box<dyn std::error::Error>> {
     let config = Arc::new(Config::from_env()?);
-    let state = AppState::new(config).await?;
+    Ok(AppState::new(config).await?)
+}
 
-    let user_id_filter = match &username {
-        Some(name) => match state.users.get_by_username(name).await? {
-            Some(user) => Some(user.id),
-            None => {
-                eprintln!("Error: no such user '{name}'");
-                return Ok(());
-            }
-        },
-        None => None,
-    };
-
-    let tokens = state.api_tokens.list_all().await?;
-    let tokens: Vec<_> = tokens
-        .into_iter()
-        .filter(|t| user_id_filter.is_none_or(|id| t.user_id == id))
-        .collect();
-
-    if tokens.is_empty() {
-        println!("No tokens found.");
-        return Ok(());
-    }
+pub async fn handle_token_list(username: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    let state = build_state().await?;
 
     println!("{:<6} {:<15} {:<25} {:<12} {:<20} {}", "ID", "USER", "NAME", "SCOPE", "LAST USED", "STATUS");
-    for t in tokens {
-        let scope = t.path_prefix.as_deref().unwrap_or("(full access)");
-        let last_used = t.last_used_at.as_deref().unwrap_or("never");
-        let status = if t.revoked_at.is_some() { "revoked" } else { "active" };
-        println!(
-            "{:<6} {:<15} {:<25} {:<12} {:<20} {}",
-            t.id, t.username, t.name, scope, last_used, status
-        );
+
+    if let Some(name) = &username {
+        // A user filter is given: go straight to the indexed per-user query
+        // (ApiTokenStoreDb::list_for_user) instead of joining every user's
+        // tokens via list_all() and discarding all but one user's rows.
+        let user = match state.users.get_by_username(name).await? {
+            Some(user) => user,
+            None => return Err(format!("no such user '{name}'").into()),
+        };
+
+        let tokens = state.api_tokens.list_for_user(user.id).await?;
+        if tokens.is_empty() {
+            println!("No tokens found.");
+            return Ok(());
+        }
+        for t in tokens {
+            print_token_row(t.id, name, &t.name, t.path_prefix.as_deref(), t.last_used_at.as_deref(), t.revoked_at.is_some());
+        }
+    } else {
+        let tokens = state.api_tokens.list_all().await?;
+        if tokens.is_empty() {
+            println!("No tokens found.");
+            return Ok(());
+        }
+        for t in tokens {
+            print_token_row(
+                t.token.id,
+                &t.username,
+                &t.token.name,
+                t.token.path_prefix.as_deref(),
+                t.token.last_used_at.as_deref(),
+                t.token.revoked_at.is_some(),
+            );
+        }
     }
 
     Ok(())
 }
 
+fn print_token_row(id: i64, username: &str, name: &str, path_prefix: Option<&str>, last_used_at: Option<&str>, revoked: bool) {
+    let scope = path_prefix.unwrap_or("(full access)");
+    let last_used = last_used_at.unwrap_or("never");
+    let status = if revoked { "revoked" } else { "active" };
+    println!("{id:<6} {username:<15} {name:<25} {scope:<12} {last_used:<20} {status}");
+}
+
 pub async fn handle_token_revoke(id: i64) -> Result<(), Box<dyn std::error::Error>> {
-    let config = Arc::new(Config::from_env()?);
-    let state = AppState::new(config).await?;
+    let state = build_state().await?;
 
     if state.api_tokens.revoke_any(id).await? {
         println!("Token {id} revoked.");
+        Ok(())
     } else {
-        eprintln!("Error: no active token with id {id}");
+        Err(format!("no active token with id {id}").into())
     }
-
-    Ok(())
 }
 
 pub async fn handle_token_create(
@@ -68,16 +87,12 @@ pub async fn handle_token_create(
     name: String,
     path_prefix: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let config = Arc::new(Config::from_env()?);
-    let ttl_days = config.api_token_default_ttl_days;
-    let state = AppState::new(config).await?;
+    let state = build_state().await?;
+    let ttl_days = state.config.api_token_default_ttl_days;
 
     let user = match state.users.get_by_username(&username).await? {
         Some(user) => user,
-        None => {
-            eprintln!("Error: no such user '{username}'");
-            return Ok(());
-        }
+        None => return Err(format!("no such user '{username}'").into()),
     };
 
     let (row, plaintext) = state
